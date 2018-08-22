@@ -147,40 +147,101 @@ rethinking::HPDI(mu_at_50, prob = .89)
 # sample from posterior
 ht <- link(m4.3, data = data.frame(weight = 30:60))
 
-# sample from stanfit
-ht <- post$alpha + post$beta %*% t(30:60)
-ht <- data.frame(ht) 
-colnames(ht) <- 30:60
-ht <- reshape2::melt(ht, 
-                     variable.name = "Weight", 
-                     value.name = "Height_avg") %>%
-  mutate(Weight = as.numeric(as.character(Weight)))
+# sample from postterior of stanfit
+
+post <- as.data.frame(m04_3)
+mu.link <- function(weight) post$alpha + post$beta * weight
+weight.seq <- 30:60
+mu <- sapply(weight.seq, mu.link)
+
+# organize and calculate stats
+
+mu <- 
+  data.frame(mu) %>% 
+  rename_all(function(x) weight.seq) %>%
+  reshape2::melt(variable.name = "weight", value.name = "sim.ht") %>%
+  mutate(weight = as.integer(as.character(weight))) %>%
+  group_by(weight) %>%
+  mutate(mu = mean(sim.ht),
+         hpdi_l = HPDI(sim.ht)[1],
+         hpdi_h = HPDI(sim.ht)[2]) %>%
+  ungroup
 
 # figure 4.7, pg. 106
 
-require(ggplot2); library(ggthemes)
+require(ggplot2); library(ggthemes); library(gridExtra)
 
-p1 <- ggplot(ht) + 
-  geom_point(aes(Weight, Height_avg), alpha = .03, color = "dodgerblue") + 
-  theme_tufte(base_family = 'sans') + 
-  ylim(140, 180) +
-  xlab("weight") + ylab("height")
+p <- ggplot(mu) + theme_tufte(base_family = 'sans') + lims(y = c(130, 180))
 
+p1 <- p + 
+  geom_point(aes(weight, sim.ht), alpha = .1, shape = 1, color = 'dodgerblue')
 
-ht_stats <- ht %>% group_by(Weight) %>% 
-  summarise(mu = mean(Height_avg),
-            hpdi_l = HPDI(Height_avg)[1],
-            hpdi_h = HPDI(Height_avg)[2]) 
+p2 <- p + 
+  geom_point(data = d, mapping = aes(weight, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(aes(x=weight, ymin=hpdi_l, ymax=hpdi_h), alpha = .2) +
+  geom_line(aes(weight, mu))
 
-p2 <- ggplot(ht_stats) + 
-  geom_point(data = d, 
-            mapping = aes(weight, height), size = 1, color = "dodgerblue", shape = 1) +
-  geom_ribbon(aes(x = Weight, ymin = hpdi_l, ymax = hpdi_h), alpha = .1) +
-  geom_line(aes(x = Weight, y = mu)) +
-  ylim(140, 180) +
-  theme_tufte(base_family = 'sans') 
-
-library(gridExtra)
 grid.arrange(p1, p2, nrow = 1)
+
+
+# prediction intervals, p. 107
+
+sim.ht <- 
+  sapply(weight.seq,
+         function(weight)
+           rnorm(NROW(post),
+                 post$alpha + post$beta * weight,
+                 post$sigma))
+
+sim.PI <- apply(sim.ht, 2, PI, prob = 0.89)
+sim.PI <- data.frame(weight = weight.seq, PI_l = sim.PI[1,], PI_h = sim.PI[2,])
+
+p2 + geom_ribbon(data = sim.PI,
+                 mapping = aes(x=weight, ymin=PI_l, ymax=PI_h), alpha = .05)
+
+
+# 4.5 polynomial regression, p. 110
+
+d <- 
+  Howell1 %>%
+  mutate(weight.s = (weight - mean(weight)) / sd(weight))
+
+dat <- list(
+  N = NROW(d),
+  height = d$height,
+  weight_s = d$weight.s
+)
+
+m04_5 <- stan(file = 'm04_5.stan',
+              data = dat,
+              chains = 2,
+              iter = 300,
+              cores = 2)
+
+m04_5
+
+post <- as.data.frame(m04_5)
+weight.seq <- seq(-2.2, 2, length.out = 30)
+
+mu.link <- function(weight) post$alpha + post$beta1 * weight + post$beta2 * (weight^2)
+mu <- sapply(weight.seq, mu.link)
+mu <- colMeans(mu)
+
+sim.ht <- 
+  sapply(weight.seq,
+         function(weight)
+           rnorm(NROW(post),
+                 post$alpha + post$beta1 * weight + post$beta2 * (weight^2),
+                 post$sigma))
+
+sim.PI <- apply(sim.ht, 2, PI, prob = 0.89)
+sim.PI <- data.frame(weight = weight.seq, PI_l = sim.PI[1,], PI_h = sim.PI[2,])
+
+ggplot() + 
+  theme_tufte(base_family = 'sans') + 
+  geom_point(data=d, aes(weight.s, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = sim.PI,
+              aes(x=weight, ymin=PI_l, ymax=PI_h), alpha = .1) +
+  geom_line(aes(weight.seq, mu)) + labs(x = 'Z_weight')
 
 
