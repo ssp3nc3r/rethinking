@@ -1,0 +1,535 @@
+---
+title: "Chapter 04"
+author: "Scott Spencer"
+date: "8/22/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+# Chapter 4
+We'll use the following libraries:
+
+```{r, eval=FALSE}
+library(dplyr); library(tidyr); library(rstan); library(skimr)
+```
+
+## 4.1 Why normal distributions are normal
+
+### 4.1.1 Normal by addition
+
+```{r}
+N_reps <- 100; N_steps <- 16
+
+set.seed(TRUE)
+
+position <- 
+  replicate(N_reps, runif(N_steps, -1, 1)) %>%               # simulate 16 steps
+  as_tibble() %>%                                            # convert to tibble
+  rbind(0, .) %>%                                            # include row of zeros for no steps
+  mutate(step = 0:N_steps) %>%                               # add variable for number of steps
+  gather(key, value, -step) %>%                              # convert data to long format
+  mutate(person = rep(seq(N_reps), each = N_steps + 1)) %>%  # adds person index
+  group_by(person) %>%                                       # group data by person
+  mutate(position = cumsum(value)) %>%                       # calculate steps accumulated by person
+  ungroup()                                                  # ungroup
+```
+
+```{r}
+ggplot(position) +
+  geom_line(aes(step, position, 
+                group = person),
+            color = 'dodgerblue',
+            alpha = .3) +
+  theme_tufte(base_family = 'sans')
+
+```
+
+## 4.2 A language for describing models
+
+## 4.3 A gaussian model of height
+
+First we load in the data, and get a subset where age is greater than 18.
+
+```{r}
+data('Howell1', package = 'rethinking')
+d  <- Howell1; rm(Howell1)
+d2 <- d %>% filter(age >= 18)
+```
+
+Here's the Stan code, which is compiled and stored in object `m04_1` (which is specified but not shown below in the code chunk header):
+
+```{stan output.var="m04_1"}
+data {
+  int<lower=1> N;
+  vector[N] height;
+}
+parameters {
+  real mu;
+  real<lower=0,upper=50> sigma;
+}
+model {
+  target += normal_lpdf(height | mu, sigma);
+  target += normal_lpdf(mu | 178, 20);
+}
+
+```
+
+Stan programs accept data in a list format, so we reorganize `d2`:
+
+```{r}
+dat <- list(N = NROW(d2),
+            height = d2$height)
+```
+
+We sample from our model:
+
+```{r}
+fit04_1 <- sampling(m04_1, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+And summarise it below:
+
+```{r}
+print(fit04_1, probs = c(0.10, 0.5, 0.9))
+```
+
+Following the examples in McElreath, we modify the Stan model to show the effect of a narrow prior:
+
+```{stan output.var="m04_2"}
+data {
+  int<lower=1> N;
+  vector[N] height;
+}
+parameters {
+  real mu;
+  real<lower=0,upper=50> sigma;
+}
+model {
+  target += normal_lpdf(height | mu, sigma);
+  target += normal_lpdf(mu | 178, 0.1);
+}
+
+```
+
+After sampling, 
+
+```{r}
+fit04_2 <- sampling(m04_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+We summarise the model:
+
+```{r}
+print(fit04_2, probs = c(0.10, 0.5, 0.9))
+```
+
+The strong prior on `mu` held it almost unchanged, but the weak prior on `sigma` allowed the data to move it's posterior. Let's look at their correlation. To do this, we need to calculate the posterior of the predictors:
+
+```{r}
+post <- as.data.frame(fit04_1)
+```
+
+The parameter covariance matrix is,
+
+```{r}
+post_cov <- post %>% select(mu, sigma) %>% cov() 
+post_cov
+```
+
+and the correlation matrix is:
+
+```{r}
+post %>% select(mu, sigma) %>% cor()
+```
+
+Covariate `mu` gives no information about `sigma` and vice versa.
+
+#### Overthinking
+
+```{r}
+coef_mean <- post %>% select(mu, sigma) %>% summarise_all(mean) %>% as.numeric
+post <- MASS::mvrnorm(n = 1e4, mu = coef_mean, Sigma = post_cov)
+```
+
+### 4.4.2 Fitting the model
+
+```{stan output.var="m04_3"}
+data {
+  int<lower=1> N;
+  vector[N] height;
+  vector[N] weight;
+}
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0,upper=50> sigma;
+}
+model {
+  vector[N] mu = alpha + beta * weight;
+  target += normal_lpdf(height | mu, sigma);
+  target += normal_lpdf(alpha | 178, 20);
+  target += normal_lpdf(beta | 0, 10);
+}
+
+```
+
+Sampling, 
+
+```{r}
+dat <- list(N = NROW(d2),
+            height = d2$height,
+            weight = d2$weight)
+fit04_3 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+### 4.4.3 Interpreting the model fit
+
+```{r}
+print(fit04_3, probs = c(0.10, 0.5, 0.9))
+```
+
+```{r}
+post <- as.data.frame(fit04_3)
+post %>% select(alpha, beta, sigma) %>% cor()
+```
+
+We find that parameters `alpha` and `beta` are highly correlated.
+
+Let's center the data for `weight`.
+
+```{r}
+d2 <- d2 %>% mutate(weight.c = (weight - mean(weight)))
+
+dat <- list(N = NROW(d2),
+            height = d2$height,
+            weight_c = d2$weight.c)
+```
+
+Re-code the Stan model,
+
+```{stan output.var="m04_4"}
+data {
+  int<lower=1> N;
+  vector[N] height;
+  vector[N] weight_c;
+}
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0,upper=50> sigma;
+}
+model {
+  vector[N] mu = alpha + beta * weight_c;
+  target += normal_lpdf(height | mu, sigma);
+  target += normal_lpdf(alpha | 178, 20);
+  target += normal_lpdf(beta | 0, 10);
+}
+
+```
+
+And sampling from the new model,
+
+```{r}
+fit04_4 <- sampling(m04_4, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+gives us:
+
+```{r}
+print(fit04_4, probs = c(0.10, 0.5, 0.9))
+```
+
+With centering, we can interpret `alpha` as the average height at the centered (average) weight. We an also see that centering removed the correlation between `alpha` and `beta`:
+
+```{r}
+post <- as.data.frame(fit04_4)
+post %>% select(alpha, beta, sigma) %>% cor()
+```
+
+#### 4.4.3.2 Plotting posterior inference against the data
+
+Plot original data against the mean intercept and slope:
+
+```{r}
+post <- as.data.frame(fit04_3)
+p <- ggplot() + theme_tufte(base_family = 'sans') + lims(y = c(130, 180))
+
+p1 <- p + 
+  geom_point(data = d2,
+             aes(weight, height), 
+             shape = 1, color = 'dodgerblue') +
+  geom_abline(intercept = mean(post$alpha), slope = mean(post$beta))
+```
+
+Next, we'll show how uncertainty depends on how much data is used to fit the model. We'll use the first `10`, `50`, `150`, and `352` observations, respectively. With Stan, we have to re-sample the model each time.
+
+```{r}
+N <- 10
+dat <- list(N = N,
+            height = d2[1:N,]$height,
+            weight = d2[1:N,]$weight)
+fit04_3_1 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
+post1 <- as.data.frame(fit04_3_1)
+
+N <- 50
+dat <- list(N = N,
+            height = d2[1:N,]$height,
+            weight = d2[1:N,]$weight)
+fit04_3_2 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
+post2 <- as.data.frame(fit04_3_2)
+
+N <- 150
+dat <- list(N = N,
+            height = d2[1:N,]$height,
+            weight = d2[1:N,]$weight)
+fit04_3_3 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
+post3 <- as.data.frame(fit04_3_3)
+
+N <- 352
+dat <- list(N = N,
+            height = d2[1:N,]$height,
+            weight = d2[1:N,]$weight)
+fit04_3_4 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
+post4 <- as.data.frame(fit04_3_4)
+```
+
+Let's graphically compare them:
+
+```{r}
+N <- 10
+p1 <- p + 
+  geom_point(data = d2[1:N,],
+             aes(weight, height), 
+             shape = 1, color = 'dodgerblue') +
+  geom_abline(data = post1[1:20,],
+              aes(intercept = alpha, slope = beta),
+              alpha = .1) +
+  labs(subtitle="N = 10")
+
+N <- 50
+p2 <- p + 
+  geom_point(data = d2[1:N,],
+             aes(weight, height), 
+             shape = 1, color = 'dodgerblue') +
+  geom_abline(data = post2[1:20,],
+              aes(intercept = alpha, slope = beta),
+              alpha = .1 ) +
+  labs(subtitle="N = 50")
+
+N <- 150
+p3 <- p + 
+  geom_point(data = d2[1:N,],
+             aes(weight, height), 
+             shape = 1, color = 'dodgerblue') +
+  geom_abline(data = post3[1:20,],
+              aes(intercept = alpha, slope = beta),
+              alpha = .1 ) +
+  labs(subtitle="N = 150")
+
+N <- 352
+p4 <- p + 
+  geom_point(data = d2[1:N,],
+             aes(weight, height), 
+             shape = 1, color = 'dodgerblue') +
+  geom_abline(data = post4[1:20,],
+              aes(intercept = alpha, slope = beta),
+              alpha = .1 ) +
+  labs(subtitle="N = 352")
+
+library(gridExtra)
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+Let's look at just the weight of `50` kg.
+
+```{r}
+mu_at_50 <- post$alpha + post$beta * 50
+ggplot() + 
+  geom_density(aes(x = mu_at_50), fill = 'lightskyblue1') +
+  theme_tufte(base_family = 'sans') +
+  labs(x = 'mu | weight=50')
+```
+
+The Highest Posterior Density Interval (HPDI) with a credible interval of 80 percent is,
+
+```{r}
+HDInterval::hdi(mu_at_50, credMass = 0.8)[1:2]
+```
+
+The density at each weight can be shown as follows:
+
+```{r}
+f_mu <- function(x) post$alpha + post$beta * x
+weight_new <- seq(25, 70)
+
+mu <- 
+  sapply(weight_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) weight_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(weight, height, -Iter) %>%
+  group_by(weight) %>%
+  mutate(hpdi_l = HDInterval::hdi(height, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(height, credMass = 0.8)[2]) %>%
+  mutate(mu = mean(height)) %>%
+  ungroup() %>%
+  mutate(weight = as.integer(weight))
+
+p <- ggplot() + theme_tufte(base_family = 'sans')
+p1 <- p +
+  geom_point(data = mu %>% filter(Iter < 101),
+             aes(weight, height), alpha = .05, color = 'dodgerblue') +
+  labs(subtitle="Density at each weight")
+
+p2 <- p +
+  geom_point(data = d2,
+             aes(weight, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = mu,
+              aes(x = weight, ymin = hpdi_l, ymax = hpdi_h),
+              alpha = .1) +
+  geom_abline(data = post,
+              aes(intercept = mean(alpha), slope = mean(beta))) +
+  labs(subtitle="HPDI Interval = 0.95")
+
+grid.arrange(p1, p2, nrow = 1)  
+```
+
+#### Prediction intervals
+
+```{r}
+sim_ht <- 
+  sapply(weight_new,
+         function(x)
+           rnorm(NROW(post),
+                 post$alpha + post$beta * x,
+                 post$sigma)) %>%
+  as_tibble() %>%
+  rename_all(function(x) weight_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(weight, height, -Iter) %>%
+  group_by(weight) %>%
+  mutate(pi_l = rethinking::PI(height, prob = 0.8)[1],
+         pi_h = rethinking::PI(height, prob = 0.8)[2]) %>%
+  ungroup() %>%
+  mutate(weight = as.integer(weight))
+
+p2 + geom_ribbon(data = sim_ht,
+                 mapping = aes(x=weight, ymin=pi_l, ymax=pi_h), alpha = .05) +
+  labs(subtitle = 'Prediction Intervals = 0.95')
+
+
+```
+
+## Polynomial regression
+
+First, we standardize our weight.
+
+```{r}
+d <- d %>% mutate(weight.z = (weight - mean(weight)) / sd(weight))
+```
+
+Next, we code a Stan program.
+
+```{stan output.var="m04_5"}
+data {
+  int N;
+  vector[N] height;
+  vector[N] weight_z;
+}
+parameters {
+  real alpha;
+  real beta1;
+  real beta2;
+  real<lower=0,upper=50> sigma;
+}
+model {
+  vector[N] mu = alpha + beta1 * weight_z + beta2 * (weight_z .* weight_z);
+  target += normal_lpdf(height | mu, sigma);
+  target += normal_lpdf(alpha | 140, 100);
+  target += normal_lpdf(beta1 | 0, 10);
+  target += normal_lpdf(beta2 | 0, 10);
+  target += uniform_lpdf(sigma | 0, 50);
+}
+
+```
+
+Now, we organize the data and sample.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  height = d$height,
+  weight_z = d$weight.z
+)
+
+fit04_5 <- sampling(m04_5, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Here's a model summary.
+
+```{r}
+print(fit04_5, probs = c(0.1, 0.5, 0.9))
+```
+
+Let's graphically review.
+
+```{r}
+post <- as.data.frame(fit04_5)
+weight_z_new <- seq(-2.2, 2, length.out = 30)
+
+f_mu <- function(x) post$alpha + post$beta1 * x + post$beta2 * (x ^ 2)
+
+mu <- 
+  sapply(weight_z_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) weight_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(weight_z, height, -Iter) %>%
+  group_by(weight_z) %>%
+  mutate(hpdi_l = HDInterval::hdi(height, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(height, credMass = 0.8)[2]) %>%
+  mutate(mu = mean(height)) %>%
+  ungroup() %>%
+  mutate(weight_z = as.numeric(weight_z))
+
+sim_ht <- 
+  sapply(weight_z_new,
+         function(x)
+           rnorm(NROW(post),
+                 post$alpha + post$beta1 * x + post$beta2 * (x ^ 2),
+                 post$sigma)) %>%
+  as_tibble() %>%
+  rename_all(function(x) weight_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(weight_z, height, -Iter) %>%
+  group_by(weight_z) %>%
+  mutate(pi_l = rethinking::PI(height, prob = 0.8)[1],
+         pi_h = rethinking::PI(height, prob = 0.8)[2],
+         mu = mean(height)) %>%
+  ungroup() %>%
+  mutate(weight_z = as.numeric(weight_z))
+
+rescale <- seq(-2, 2, by = 1)
+
+ggplot() +
+  geom_point(data = d,
+             aes(weight.z, height), shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = sim_ht,
+              aes(x = weight_z, ymin = pi_l, ymax = pi_h), alpha = .1) +
+  geom_line(data = mu,
+            aes(weight_z, mu)) +
+  theme_tufte(base_family = 'sans') +
+  scale_x_continuous(breaks = rescale,
+                     labels = round(rescale * sd(d$weight) + mean(d$weight), 1)) +
+  labs(x = 'weight')
+```
+
+
+
+
+

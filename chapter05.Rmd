@@ -1,0 +1,425 @@
+---
+title: "Chapter 05"
+author: "Scott Spencer"
+date: "8/22/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+# Chapter 5
+We'll use the following libraries:
+
+```{r, eval=FALSE}
+library(dplyr); library(tidyr); library(rstan); library(skimr)
+```
+
+## 5.1 Spurious association
+
+```{r}
+data('WaffleDivorce', package = 'rethinking')
+d  <- WaffleDivorce; rm(WaffleDivorce)
+```
+
+Standardize the predictors
+
+```{r}
+d <- d %>% 
+  mutate(MedianAgeMarriage_z = (MedianAgeMarriage - mean(MedianAgeMarriage)) / 
+                               sd(MedianAgeMarriage),
+         Marriage_z = (Marriage - mean(Marriage)) /
+                      sd(Marriage))
+```
+
+Write a Stan model
+
+```{stan output.var="m05_1"}
+data {
+  int<lower=0> N;
+  vector[N] divorce;
+  vector[N] median_age_z;
+}
+parameters {
+  real a;
+  real bA;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu = a + median_age_z * bA;
+  target += normal_lpdf(divorce | mu, sigma);
+  
+  target += normal_lpdf(a | 10, 10);
+  target += normal_lpdf(bA | 0, 10);
+}
+```
+
+Organize data for Stan model, and sample.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  divorce = d$Divorce,
+  median_age_z = d$MedianAgeMarriage_z
+)
+
+fit05_1 <- sampling(m05_1, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summarise model
+
+```{r}
+print(fit05_1, probs = c(0.10, 0.5, 0.9))
+```
+
+Write another Stan model
+
+```{stan output.var="m05_2"}
+data {
+  int N;
+  vector[N] divorce;
+  vector[N] marriage_z;
+}
+parameters {
+  real a;
+  real bM;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu = a + marriage_z * bM;
+  
+  target += normal_lpdf(divorce | mu, sigma);
+  target += normal_lpdf(a | 10, 10);
+  target += normal_lpdf(bM | 0, 10);
+}
+
+```
+
+Organize data for Stan and sample.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  divorce = d$Divorce,
+  marriage_z = d$Marriage_z
+)
+
+fit05_2 <- sampling(m05_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summarise the model
+
+```{r}
+print(fit05_2, probs = c(.1, .5, .9))
+```
+
+Plot the first model,
+
+```{r}
+# draw from posterior samples
+post <- as.data.frame(fit05_1)
+
+# recreate mu and simulate it with new data
+f_mu <- function(x) post$a + post$bA * x
+A_z_new <- seq(-3, 3)
+
+mu <- 
+  sapply(A_z_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) A_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(A_z, divorce, -Iter) %>%
+  group_by(A_z) %>%
+  mutate(hpdi_l = HDInterval::hdi(divorce, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(divorce, credMass = 0.8)[2]) %>%
+  mutate(mu = mean(divorce)) %>%
+  ungroup() %>%
+  mutate(A_z = as.numeric(A_z))
+
+# plot raw data and model estimate of mu
+p <- ggplot() + theme_tufte(base_family = 'sans')
+p1 <- p + 
+  geom_point(data = d,
+             aes(MedianAgeMarriage_z, Divorce), 
+             shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = mu,
+              aes(x = A_z, ymin = hpdi_l, ymax = hpdi_h), alpha = .1) +
+  geom_line(data = mu,
+            aes(x = A_z, y = mu))
+```
+
+Plot the second model
+
+```{r}
+# draw from posterior samples
+post <- as.data.frame(fit05_2)
+
+# recreate mu and simulate it with new data
+f_mu <- function(x) post$a + post$bM * x
+M_z_new <- seq(-3, 3)
+
+mu <- 
+  sapply(M_z_new, f_mu) %>%
+  as_tibble() %>%
+  rename_all(function(x) M_z_new) %>%
+  mutate(Iter = row_number()) %>%
+  gather(M_z, divorce, -Iter) %>%
+  group_by(M_z) %>%
+  mutate(hpdi_l = HDInterval::hdi(divorce, credMass = 0.8)[1],
+         hpdi_h = HDInterval::hdi(divorce, credMass = 0.8)[2]) %>%
+  mutate(mu = mean(divorce)) %>%
+  ungroup() %>%
+  mutate(M_z = as.numeric(M_z))
+
+# plot raw data and model estimate of mu
+p <- ggplot() + theme_tufte(base_family = 'sans')
+p2 <- p + 
+  geom_point(data = d,
+             aes(Marriage_z, Divorce), 
+             shape = 1, color = 'dodgerblue') +
+  geom_ribbon(data = mu,
+              aes(x = M_z, ymin = hpdi_l, ymax = hpdi_h), alpha = .1) +
+  geom_line(data = mu,
+            aes(x = M_z, y = mu))
+```
+
+```{r}
+library(gridExtra)
+grid.arrange(p2, p1, nrow = 1)
+```
+
+Fit model using both predictors
+
+```{stan output.var="m05_3"}
+data {
+  int N;
+  vector[N] divorce;
+  vector[N] marriage_z;
+  vector[N] median_age_z;
+}
+parameters {
+  real a;
+  real bA;
+  real bM;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu = a + median_age_z * bA + marriage_z * bM;
+  target += normal_lpdf(divorce | mu, sigma);
+  target += normal_lpdf(a | 10, 10);
+  target += normal_lpdf(bA | 0, 10);
+  target += normal_lpdf(bM | 0, 10);
+  target += exponential_lpdf(sigma | 1);
+}
+```
+
+Organize data and sample, this time including new data with which we want to predict.
+
+```{r}
+dat = list(
+  N = NROW(d),
+  divorce = d$Divorce,
+  marriage_z = d$Marriage_z,
+  median_age_z = d$MedianAgeMarriage_z
+)
+
+fit05_3 <- sampling(m05_3, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summarise model
+
+```{r}
+print(fit05_3, probs = c(0.1, 0.5, 0.9))
+```
+
+### Plotting multivariate posteriors
+
+#### residual plots
+
+```{stan output.var="m05_4"}
+data {
+  int<lower=1> N;
+  vector[N] A_z;
+  vector[N] M_z;
+} 
+parameters {
+  real a;
+  real b;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu = a + A_z * b;
+  target += normal_lpdf(M_z | mu, sigma);
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(b | 0, 10);
+  target += exponential_lpdf(sigma | 1);
+}
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  A_z = d$MedianAgeMarriage_z,
+  M_z = d$Marriage_z
+)
+
+fit05_4 <- sampling(m05_4, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit05_4, probs = c(0.1, 0.5, 0.9))
+```
+
+```{r}
+post <- as.matrix(fit05_4)
+
+mu <- post[,"a"] + d$MedianAgeMarriage_z %*% t(post[,"b"])
+mu <- rowMeans(mu)
+resid <- d$Marriage_z - mu
+
+ggplot() + 
+  theme_tufte(base_family = 'sans') +
+  geom_point(data = d,
+             aes(MedianAgeMarriage_z, Marriage_z), shape = 1, color = 'dodgerblue') +
+  geom_abline(aes(slope = mean(post[,"b"]), intercept = mean(post[,"a"]))) +
+  geom_segment(aes(x = d$MedianAgeMarriage_z, 
+                   xend = d$MedianAgeMarriage_z,
+                   y = mu, yend = d$Marriage_z))
+```
+
+#### counterfactual plots
+
+
+```{r}
+# get draws for parameters
+post <- as.matrix(fit05_3)
+
+# setup new data
+nd <- 
+  expand.grid(median_age_z = seq(-3, 3), 
+              marriage_z = seq(-3, 3)) %>% 
+  as.matrix
+
+# estimate mu
+mu <- post[,1] + post[,2:3] %*% t(nd)
+
+# get stats on mu
+avg <- colMeans(mu)
+hdi <- apply(mu, 2, HDInterval::hdi)
+
+# simulate divorce rate
+iter <- 1e4
+y_hat <- matrix(nrow = iter, ncol = NROW(nd))
+for(i in 1:NROW(nd)) y_hat[,i] <- rnorm(iter, post[,1] + post[,2:3] %*% as.matrix(nd[i,]), post[,4])
+
+# get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_hdi <- apply(y_hat, 2, HDInterval::hdi)
+
+nd <- 
+  as_tibble(nd) %>%
+  bind_cols(avg = avg, 
+            mu_hdi_l = hdi[1,], 
+            mu_hdi_h = hdi[2,],
+            y_hdi_l = y_hat_hdi[1,],
+            y_hdi_h = y_hat_hdi[2,])
+```
+
+```{r}
+p1 <- ggplot(nd, aes(x = median_age_z, y = avg, group = marriage_z)) + 
+  theme_tufte(base_family = 'sans') +
+  geom_line(data = nd,
+            color = 'gray90') +
+  geom_ribbon(data = nd %>% filter(marriage_z == 0),
+              aes(x = median_age_z, ymin = mu_hdi_l, ymax = mu_hdi_h), alpha = .1) +
+  geom_ribbon(data = nd %>% filter(marriage_z == 0),
+              aes(x = median_age_z, ymin = y_hdi_l, ymax = y_hdi_h), alpha = .1) +
+  geom_line(data = nd %>% filter(marriage_z == 0),
+            aes(x = median_age_z, y = avg)) + 
+  geom_text(data = nd %>% filter(median_age_z == min(median_age_z)), 
+            aes(label = marriage_z, x = median_age_z - 0.1, y = avg), size = 2) +
+  geom_text(data = nd %>% filter(median_age_z == max(median_age_z)), 
+            aes(label = marriage_z, x = median_age_z + 0.1, y = avg), size = 2) +
+  labs(x = 'Standardized Median Age of Marriage', y = 'Divorce rate') 
+```
+
+
+
+```{r}
+p2 <- ggplot(nd, aes(x = marriage_z, y = avg, group = median_age_z)) + 
+  theme_tufte(base_family = 'sans') +
+  geom_line(data = nd,
+            color = 'gray90') +
+  geom_ribbon(data = nd %>% filter(median_age_z == 0),
+              aes(x = marriage_z, ymin = mu_hdi_l, ymax = mu_hdi_h), alpha = .1) +
+  geom_ribbon(data = nd %>% filter(median_age_z == 0),
+              aes(x = marriage_z, ymin = y_hdi_l, ymax = y_hdi_h), alpha = .1) +
+  geom_line(data = nd %>% filter(median_age_z == 0),
+            aes(x = marriage_z, y = avg)) + 
+  geom_text(data = nd %>% filter(marriage_z == min(marriage_z)), 
+            aes(label = median_age_z, x = marriage_z - 0.1, y = avg), size = 2) +
+  geom_text(data = nd %>% filter(marriage_z == max(marriage_z)), 
+            aes(label = median_age_z, x = marriage_z + 0.1, y = avg), size = 2) +
+  labs(x = 'Standardized Rate of Marriage', y = 'Divorce rate')
+```
+
+```{r}
+grid.arrange(p2, p1, nrow = 1)
+```
+
+
+#### posterior prediction plots
+
+```{r}
+# estimate mu
+mu <- post[,1] + post[,2:3] %*% t(d[,14:15])
+
+# get stats on mu
+avg <- colMeans(mu)
+hdi <- apply(mu, 2, HDInterval::hdi)
+
+# simulate divorce rate
+iter <- 1e4
+y_hat <- matrix(nrow = iter, ncol = NROW(d[,14:15]))
+for(i in 1:NROW(d[,14:15])) y_hat[,i] <- rnorm(iter, post[,1] + post[,2:3] %*% t(d[i,14:15]), post[,4])
+
+# get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_hdi <- apply(y_hat, 2, HDInterval::hdi)
+d <- d %>% mutate(mu = avg,
+                  mu_hdi_l = hdi[1,],
+                  mu_hdi_h = hdi[2,],
+                  y_hdi_l = y_hat_hdi[1,],
+                  y_hdi_h = y_hat_hdi[2,])
+```
+
+predicted versus observed
+
+```{r}
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_abline(intercept = 0, slope = 1, 
+              linetype = 'dashed', color = 'gray70') +
+  geom_segment(data = d,
+               aes(x = Divorce, xend = Divorce, 
+                   y = mu_hdi_l, yend = mu_hdi_h),
+               color = 'dodgerblue') +
+  geom_point(data = d,
+             aes(Divorce, mu), 
+             shape = 1, color = 'dodgerblue', fill = 'white') +
+  labs(x = "Observed divorce rate", y = 'Estimated average divorce rate',
+       subtitle = 'Observed versus\nestimated for each state')
+
+```
+
+finish next two plots
+
+
+## 5.2 Masked relationships
+
+
+
+
+
