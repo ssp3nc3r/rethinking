@@ -1,0 +1,705 @@
+---
+title: "chapter10"
+author: "Scott Spencer"
+date: "8/25/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+ 
+Load and review data.
+
+```{r}
+data('chimpanzees', package = 'rethinking')
+d <- chimpanzees; rm(chimpanzees)
+skim(d)
+```
+
+Fit a model.
+
+```{r}
+library(rethinking)
+tmp <- map(
+  alist(
+    pulled_left ~ dbinom(1, p),
+    logit(p) <- a,
+    a ~ dnorm(0, 10)
+  ),
+  data = d
+)
+stancode(tmp)
+```
+
+
+```{stan output.var="m10_1"}
+data {
+  int N;
+  int<lower=0, upper=1> L[N];  // pulled left lever
+}
+parameters {
+  real a;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a | 0, 10);
+  for (i in 1:N) p[i] = a;
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for (n in 1:N) {
+    p[n] = a;
+    log_lik[n] = bernoulli_logit_lpmf(L[n] | p[n]);
+  }
+  }
+}
+```
+
+Organize data and sample from the model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  L = d$pulled_left
+)
+
+fit10_1 <- sampling(m10_1, data = dat, iter = 1000, chains = 2, cores = 2)
+print(fit10_1, include = F, pars = c("log_lik"), probs = c(.1, .5, .9))
+```
+
+Model two:
+
+```{stan output.var="m10_2"}
+data {
+  int N;
+  int<lower=0, upper=1> L[N]; // pulled left
+  vector[N] P; // pro-social left
+}
+parameters {
+  real a;
+  real bp;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(bp | 0, 10);
+  
+  for (i in 1:N) p[i] = a + bp * P[i];
+  
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(n in 1:N) {
+    p[n] = a + bp * P[n];
+    log_lik[n] = bernoulli_logit_lpmf(L[n] | p[n]);
+  }
+  
+  }
+}
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  L = d$pulled_left,
+  P = d$prosoc_left
+)
+
+fit10_2 <- sampling(m10_2, data = dat, iter = 1000, chains = 2, cores = 2)
+print(fit10_2, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+Model three:
+
+```{stan output.var="m10_3"}
+data {
+  int N;
+  int<lower=0, upper=1> L[N];
+  vector[N] P;
+  vector[N] C;
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(bp | 0, 10);
+  target += normal_lpdf(bpc | 0, 10);
+  for (i in 1:N) p[i] = a + (bp + bpc * C[i]) * P[i];
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(n in 1:N) {
+    p[n] = a + (bp + bpc * C[n]) * P[n];
+    log_lik[n] = binomial_logit_lpmf(L[n] | 1, p[n]);
+  }
+  }
+}
+```
+
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  L = d$pulled_left,
+  P = d$prosoc_left,
+  C = d$condition
+)
+
+fit10_3 <- sampling(m10_3, data = dat, iter = 1000, chains = 2, cores = 2)
+print(fit10_3, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+```{r}
+# compare models
+library(loo)
+
+log_lik_10_1 <- extract_log_lik(fit10_1, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_1))
+loo_10_1     <- loo(log_lik_10_1, r_eff = r_eff, cores = 2)
+
+log_lik_10_2 <- extract_log_lik(fit10_2, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_2))
+loo_10_2     <- loo(log_lik_10_2, r_eff = r_eff, cores = 2)
+
+log_lik_10_3 <- extract_log_lik(fit10_3, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_3))
+loo_10_3     <- loo(log_lik_10_3, r_eff = r_eff, cores = 2)
+
+loo::compare(loo_10_1, loo_10_2, loo_10_3)
+```
+
+
+Create model averaged predictions
+
+
+```{r}
+# setup new data
+d_p <- data.frame(P = c(0, 1, 0, 1),
+                  C = c(0, 0, 1, 1))
+
+# get posterior of parameters
+post10_1 <- as.data.frame(fit10_1) %>% select(a)
+post10_2 <- as.data.frame(fit10_2) %>% select(a, bp)
+post10_3 <- as.data.frame(fit10_3) %>% select(a, bp, bpc)
+
+# posterior predictors for model 1
+f_mu <- function(obs) plogis(post10_1$a)
+mu <- mapply(f_mu, obs = 1:NROW(d_p))
+mu.mean10_1 <- apply(mu, 2, mean)
+mu.hpdi10_1 <- apply(mu, 2, HPDI)
+
+# posterior predictors for model 2
+f_mu <- function(P) plogis(post10_2$a + post10_2$bp * P)
+mu10_2 <- mapply(f_mu, P = d_p$P)
+mu.mean10_2 <- apply(mu10_2, 2, mean)
+mu.hpdi10_2 <- apply(mu10_2, 2, HPDI)
+
+# posterior predictors for model 3
+f_mu <- function(C, P) plogis(post10_3$a + (post10_3$bp + post10_3$bpc * C) * P )
+mu10_3 <- mapply(f_mu, C = d_p$C, P = d_p$P)
+mu.mean10_3 <- apply(mu10_3, 2, mean)
+mu.hpdi10_3 <- apply(mu10_3, 2, HPDI)
+
+# get model weights from loo above
+m10_weights <- loo_model_weights(list(loo_10_1, loo_10_2, loo_10_3), method = "pseudobma", BB = F)
+
+# create ensemble or model average for paramters stats
+ensemble10_mean <- m10_weights[1] * mu.mean10_1 + m10_weights[2] * mu.mean10_2 + m10_weights[3] * mu.mean10_3
+ensemble10_HPDI <- m10_weights[1] * mu.hpdi10_1 + m10_weights[2] * mu.hpdi10_2 + m10_weights[3] * mu.hpdi10_3
+
+# organize data
+d_p <- 
+  d_p %>%
+  mutate(action = row_number(),
+         ens_mean = ensemble10_mean,
+         ens_HPDI_l = ensemble10_HPDI[1,],
+         ens_HPDI_h = ensemble10_HPDI[2,])
+```
+
+
+plot information
+
+
+```{r}
+
+d_ <- 
+  d %>% 
+  group_by(actor, prosoc_left, condition) %>% 
+  summarise(prop_left = sum(pulled_left) / n()) %>%
+  ungroup %>%
+  mutate(action = rep(c(1, 3, 2, 4), times = 7))
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(data = d_,
+            aes(x = action, y = prop_left, group = actor), color = 'dodgerblue') +
+  geom_ribbon(data = d_p,
+              aes(x = action,
+                  ymin = ens_HPDI_l,
+                  ymax = ens_HPDI_h),
+              alpha = .1) +
+  geom_line(data = d_p,
+            aes(x = action, y = ens_mean)) +
+  lims(y = c(0, 1)) +
+  scale_x_continuous(labels = c("1" = "0/0", "2" = "1/0", "3" = "0/1", "4" = "1/1")) +
+  labs(x = "Prosocial Left / Condition", y = "Proportion pulled left")
+```
+
+Include individuals in model.
+
+```{stan output.var="m10_4"}
+data {
+  int N;
+  int<lower=0, upper=1> L[N];
+  vector[N] P;
+  vector[N] C;
+  
+  int<lower=1, upper=N> N_chimps;
+  int<lower=1, upper=N_chimps> chimp[N];
+}
+parameters {
+  real a_chimp[N_chimps];
+  real bp;
+  real bpc;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a_chimp | 0, 10);
+  target += normal_lpdf(bp | 0, 10);
+  target += normal_lpdf(bpc | 0, 10);
+  for (i in 1:N) p[i] = a_chimp[chimp[i]] + (bp + bpc * C[i]) * P[i];
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(n in 1:N) {
+    p[n] = a_chimp[chimp[n]] + (bp + bpc * C[n]) * P[n];
+    log_lik[n] = binomial_logit_lpmf(L[n] | 1, p[n]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  L = d$pulled_left,
+  P = d$prosoc_left,
+  C = d$condition,
+  N_chimps = max(d$actor),
+  chimp = d$actor
+)
+
+fit10_4 <- sampling(m10_4, data = dat, iter = 1000, chains = 2, cores = 2)
+print(fit10_4, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+Review densities. Figure 10.3
+
+```{r}
+post10_4 <- as.data.frame(fit10_4)
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_density(aes(x = post10_4$`a_chimp[2]`), fill = 'skyblue') +
+  labs(x = 'Chimp 2', y = 'density')
+
+```
+
+```{r}
+# setup new data
+d_p <- data.frame(P = c(0, 1, 0, 1),
+                  C = c(0, 0, 1, 1),
+                  chimp = rep(1:7, each = 4),
+                  action = rep(c(1, 2, 3, 4), times = 7))
+
+# posterior predictors for model 3
+f_mu <- function(chimp, C, P) plogis(post10_4[, chimp] + (post10_4$bp + post10_4$bpc * C) * P )
+mu10_4 <- mapply(f_mu, chimp = d_p$chimp, C = d_p$C, P = d_p$P)
+mu.mean10_4 <- apply(mu10_4, 2, mean)
+mu.hpdi10_4 <- apply(mu10_4, 2, HDInterval::hdi)
+
+# organize data
+d_p <- d_p %>%
+  mutate(prop_left_pred = mu.mean10_4,
+         prop_left_hpdi_l = mu.hpdi10_4[1,],
+         prop_left_hpdi_h = mu.hpdi10_4[2,])
+
+d_p <- d_p %>% left_join(d_[,c("actor", "action", "prop_left")], 
+                         by = c("chimp" = "actor", "action" = "action"))
+```
+
+Plot each chimp actual and average prediction info.
+
+```{r}
+ggplot(d_p) + theme_tufte(base_family = 'sans') +
+  geom_line(aes(x = action, y = prop_left), color = 'dodgerblue') + 
+  geom_ribbon(aes(x = action, ymin = prop_left_hpdi_l, ymax = prop_left_hpdi_h), alpha = .1) + 
+  geom_line(aes(x = action, y = prop_left_pred), color = 'black') + 
+  facet_wrap(~chimp, nrow = 2) +   
+  lims(y = c(0, 1)) +
+  scale_x_continuous(labels = c("1" = "0/0", "2" = "1/0", "3" = "0/1", "4" = "1/1")) +
+  labs(x = "Prosocial Left / Condition", y = "Proportion pulled left") +
+  theme(panel.border = element_rect(colour = "gray90", fill=NA, size=1),
+        panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(2, "lines"))
+```
+
+
+Re-code model 10.3 using aggregated data.
+
+```{stan output.var="m10_5"}
+data {
+  int N;
+  int<lower=0> L[N]; // changed to indicate number of pulls
+  int<lower=0> O[N]; // changed to indicate opportunities to pull
+  vector[N] P;
+  vector[N] C;
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(bp | 0, 10);
+  target += normal_lpdf(bpc | 0, 10);
+  for (i in 1:N) p[i] = a + (bp + bpc * C[i]) * P[i];
+  target += binomial_logit_lpmf(L | O, p); // changed to use opportunities to pull
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(n in 1:N) {
+    p[n] = a + (bp + bpc * C[n]) * P[n];
+    log_lik[n] = binomial_logit_lpmf(L[n] | O[n], p[n]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+d1 <- d %>% 
+  group_by(actor, prosoc_left, condition) %>% 
+  summarise(pulled_left = sum(pulled_left), 
+            Opportunities = n()) %>%
+  ungroup
+
+dat <- list(
+  N = NROW(d1),
+  L = d1$pulled_left,
+  O = d1$Opportunities,
+  P = d1$prosoc_left,
+  C = d1$condition
+)
+
+fit10_5 <- sampling(m10_5, data = dat, iter = 1000, chains = 2, cores = 2)
+print(fit10_5, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+Aggregated binomial, graduate school admissions
+
+Load data
+
+```{r}
+data('UCBadmit', package = 'rethinking')
+d <- UCBadmit; rm(UCBadmit)
+```
+
+Two models in Stan, one with male, one without.
+
+```{stan output.var="m10_6"}
+data {
+  int N;
+  int<lower=0, upper=1> male[N];
+  int N_admit[N];
+  int N_applications[N];
+}
+parameters {
+  real a;
+  real bm;
+}
+model {
+  vector[N] p_admit;
+  for (i in 1:N) p_admit[i] = a + bm * male[i];
+  target += binomial_logit_lpmf(N_admit | N_applications, p_admit);
+  target += cauchy_lpdf(a | 0, 5);
+  target += normal_lpdf(bm | 0, 5);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p_admit;
+  for(n in 1:N) {
+    p_admit[n] = a + bm * male[n];
+    log_lik[n] = binomial_logit_lpmf(N_admit[n] | N_applications[n], p_admit[n]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model
+
+```{r}
+d <- d %>% mutate(male = as.integer(applicant.gender == 'male'))
+dat <- list(
+  N = NROW(d),
+  N_applications = d$applications,
+  N_admit = d$admit,
+  male = d$male
+)
+
+fit10_6 <- sampling(m10_6, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{stan output.var="m10_7"}
+data {
+  int N;
+  int N_admit[N];
+  int N_applications[N];
+}
+parameters {
+  real a;
+}
+model {
+  vector[N] p_admit;
+  for (i in 1:N) p_admit[i] = a;
+  target += binomial_logit_lpmf(N_admit | N_applications, p_admit);
+  target += cauchy_lpdf(a | 0, 5);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p_admit;
+  for(n in 1:N) {
+    p_admit[n] = a;
+    log_lik[n] = binomial_logit_lpmf(N_admit[n] | N_applications[n], p_admit[n]);
+  }
+  }
+}
+
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  N_applications = d$applications,
+  N_admit = d$admit
+)
+
+fit10_7 <- sampling(m10_7, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Compare the two models.
+
+```{r}
+# compare models
+library(loo)
+
+log_lik_10_6 <- extract_log_lik(fit10_6, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_6))
+loo_10_6     <- loo(log_lik_10_6, r_eff = r_eff, cores = 2)
+waic10_6 <- waic(log_lik_10_6)
+
+log_lik_10_7 <- extract_log_lik(fit10_7, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_7))
+loo_10_7     <- loo(log_lik_10_7, r_eff = r_eff, cores = 2)
+waic10_7 <- waic(log_lik_10_7)
+
+loo::compare(waic10_6, waic10_7)
+```
+
+Review model.
+
+```{r}
+print(fit10_6, pars = c('a', 'bm', 'lp__'), probs = c(.1, .5, .9))
+```
+
+Two new models, this time adding department.
+
+```{stan output.var="m10_8"}
+data {
+  int N;
+  int N_admit[N];
+  int N_applications[N];
+  int N_dept;
+  int<lower=1,upper=N_dept> dept[N];
+}
+parameters {
+  real a[N_dept];
+}
+model {
+  vector[N] p_admit;
+  for (i in 1:N) p_admit[i] = a[dept[i]];
+  target += binomial_logit_lpmf(N_admit | N_applications, p_admit);
+  target += normal_lpdf(a | 0, 10);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p_admit;
+  for(n in 1:N) {
+    p_admit[n] = a[dept[n]];
+    log_lik[n] = binomial_logit_lpmf(N_admit[n] | N_applications[n], p_admit[n]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  N_applications = d$applications,
+  N_admit = d$admit,
+  N_dept = length(unique(d$dept)),
+  dept = as.integer(d$dept)
+)
+
+fit10_8 <- sampling(m10_8, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+
+```{stan output.var="m10_9"}
+data {
+  int N;
+  int<lower=0,upper=1> male[N];
+  int N_admit[N];
+  int N_applications[N];
+  int N_dept;
+  int<lower=1,upper=N_dept> dept[N];
+}
+parameters {
+  real a[N_dept];
+  real bm;
+}
+model {
+  vector[N] p_admit;
+  for (i in 1:N) p_admit[i] = a[dept[i]] + bm * male[i];
+  target += binomial_logit_lpmf(N_admit | N_applications, p_admit);
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(bm | 0, 10);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p_admit;
+  for(n in 1:N) {
+    p_admit[n] = a[dept[n]] + bm * male[n];
+    log_lik[n] = binomial_logit_lpmf(N_admit[n] | N_applications[n], p_admit[n]);
+  }
+  }
+}
+
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  N_applications = d$applications,
+  N_admit = d$admit,
+  male = d$male,
+  N_dept = length(unique(d$dept)),
+  dept = as.integer(d$dept)
+)
+
+fit10_9 <- sampling(m10_9, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+
+```{r}
+# compare models
+library(loo)
+
+log_lik_10_8 <- extract_log_lik(fit10_8, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_8))
+loo_10_8     <- loo(log_lik_10_8, r_eff = r_eff, cores = 2)
+waic10_8 <- waic(log_lik_10_8)
+
+log_lik_10_9 <- extract_log_lik(fit10_9, merge_chains = FALSE)
+r_eff        <- relative_eff(exp(log_lik_10_9))
+loo_10_9     <- loo(log_lik_10_9, r_eff = r_eff, cores = 2)
+waic10_9 <- waic(log_lik_10_9)
+
+loo::compare(waic10_6, waic10_7, waic10_8, waic10_9)
+```
+
+Figure 10.6
+
+
+```{r}
+post10_9 <- as.data.frame(fit10_9)
+f_mu <- function(dept, male) plogis(post10_9[,dept] + post10_9$bm * male)
+p_admit_hat <- mapply(f_mu, dept = as.integer(d$dept), male = (d$male == "male") )
+
+# get expectation and 89% intervals of the expectation
+d <- 
+  d %>%
+  mutate(p_admit = admit / applications,
+         p_hat_mean = colMeans(p_admit_hat),
+         p_hat_hpdi_l = apply(p_admit_hat, 2, rethinking::HPDI)[1,],
+         p_hat_hpdi_h = apply(p_admit_hat, 2, rethinking::HPDI)[2,])
+
+# get 89% intervals of simulated samples
+f_mu <- function(dept, male) rbinom(n = 1e3, size = 18, prob = plogis(post10_9[,dept] + post10_9$bm * male) )
+n_admit_sim <- mapply(f_mu, dept = as.integer(d$dept), male = (d$male == 1) )
+p_admit_sim <- n_admit_sim / 18
+
+d <- d %>%
+  mutate(p_sim_mean = colMeans(p_admit_sim),
+         p_sim_hpdi_l = apply(p_admit_sim, 2, rethinking::HPDI)[1,],
+         p_sim_hpdi_h = apply(p_admit_sim, 2, rethinking::HPDI)[2,])
+```
+
+```{r}
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  facet_wrap(~paste0('Dept ', dept)) +
+  geom_point(aes(x = male, y = p_admit), color = 'dodgerblue') + 
+  geom_line(aes(x = male, y = p_admit), color = 'dodgerblue') + 
+  geom_segment(aes(x = male, xend = male, y = p_hat_hpdi_l, yend = p_hat_hpdi_h)) + 
+  geom_point(aes(x = male, y = p_hat_mean), shape = 21, fill = 'white') + 
+  geom_point(aes(x = male, y = p_sim_hpdi_l), shape = 3) +
+  geom_point(aes(x = male, y = p_sim_hpdi_h), shape = 3) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_x_continuous(limits = c(-0.5, 1.5), breaks = c(0, 1), labels = c("Female", "Male")) +
+  theme(panel.border = element_rect(colour = "gray90", fill=NA, size=1),
+        panel.spacing.x = unit(-0.5, "mm"),
+        panel.spacing.y = unit(2, "lines")) + 
+  labs(x = '', y = 'Probability of admission')
+
+```
+
+## 10.2 Poisson regression
+
+
+
+
+
+
