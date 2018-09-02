@@ -1,0 +1,93 @@
+---
+title: "Chapter 07"
+author: "Scott Spencer"
+date: "8/27/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load data.
+
+```{r}
+ data('rugged', package = 'rethinking')
+d  <- rugged; rm(rugged)
+d$loggdp <- log(d$rgdppc_2000)
+d <- d[complete.cases(d$loggdp),]
+d.A1 <- d[d$cont_africa==1,]
+d.A0 <- d[d$cont_africa==0,]
+```
+
+```{stan output.var="m07_1"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+}
+parameters {
+  real a;
+  real bR;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu = a + bR * rugged;
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+m07_2 <- m07_1
+
+dat <- list(
+  N = NROW(d.A1),
+  loggdp = d.A1$loggdp,
+  rugged = d.A1$rugged
+)
+
+fit07_1 <- sampling(m07_1, data = dat, iter = 4000, chains = 2, cores = 2)
+```
+
+
+```{r}
+post <- as.data.frame(fit07_1)
+
+mu <- post$a + d.A1$rugged %*% t(post$bR)
+mu_mean <- rowMeans(mu)
+mu_hpdi <- apply(mu, 1, rethinking::HPDI)
+
+# simulate loggdp
+iter <- 1e5
+y_hat <- matrix(nrow = iter, ncol = NROW(d.A1))
+for(i in 1:NROW(d.A1)) y_hat[,i] <- rnorm(iter, post[,"a"] + d.A1[i,"rugged"] %*% t(post[,"bR"]), post[,"sigma"])
+
+# get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_pi <- apply(y_hat, 2, rethinking::PI)
+```
+
+```{r}
+ggplot() + 
+  geom_point(data = d.A1,
+             aes(rugged, loggdp)) +
+  geom_ribbon(aes(x = d.A1$rugged, ymin = y_hat_pi[1,], ymax = y_hat_pi[2,]), alpha = .2) +
+  geom_ribbon(aes(x = d.A1$rugged, ymin = mu_hpdi[1,], ymax = mu_hpdi[2,]), alpha = .2) +
+  geom_abline(slope = mean(post$bR), intercept = mean(post$a) )
+```
+
+```{r}
+dat <- list(
+  N = NROW(d.A0),
+  loggdp = d.A0$loggdp,
+  rugged = d.A0$rugged
+)
+
+fit07_2 <- sampling(m07_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+

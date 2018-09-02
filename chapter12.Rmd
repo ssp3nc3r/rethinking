@@ -1,0 +1,696 @@
+---
+title: "Chapter 12"
+author: "Scott Spencer"
+date: "8/30/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+Load the data.
+
+```{r}
+data('reedfrogs', package = 'rethinking')
+d <-  reedfrogs; rm(reedfrogs)
+d <- d %>% mutate(tank = seq(NROW(d)))
+```
+
+Code model in stan.
+
+```{stan output.var="m12_1"}
+data {
+  int N;
+  int N_tanks;
+  int tank_id[N];
+  int density[N];
+  int surv[N];
+}
+parameters {
+  vector[N_tanks] a_tank;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a_tank | 0, 5);
+  for(i in 1:N) p[i] = inv_logit( a_tank[tank_id[i]] );
+  target += binomial_lpmf(surv | density, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(i in 1:N) {
+    p[i] = inv_logit( a_tank[tank_id[i]] );
+    log_lik[i] = binomial_lpmf(surv[i] | density[i], p[i]);
+  }
+  }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  density = d$density,
+  N_tanks = max(d$tank),
+  tank_id = d$tank,
+  surv = d$surv
+)
+
+fit12_1 <- sampling(m12_1, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summary
+
+```{r}
+print(fit12_1, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+Code multilevel in Stan.
+
+```{stan output.var="m12_2"}
+data {
+  int N;
+  int N_tanks;
+  int tank_id[N];
+  int density[N];
+  int surv[N];
+}
+parameters {
+  real alpha;
+  real<lower=0> sigma;
+  vector[N_tanks] a_tank;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(alpha | 0, 1);
+  target += cauchy_lpdf(sigma | 0, 1);
+  target += normal_lpdf(a_tank | alpha, sigma);
+  for(i in 1:N) p[i] = inv_logit( a_tank[tank_id[i]] );
+  target += binomial_lpmf(surv | density, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(i in 1:N) {
+    p[i] = inv_logit( a_tank[tank_id[i]] );
+    log_lik[i] = binomial_lpmf(surv[i] | density[i], p[i]);
+  }
+  }
+}
+
+```
+
+Sample from model.
+
+```{r}
+fit12_2 <- sampling(m12_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summary
+
+```{r}
+print(fit12_2, include = F, pars = "log_lik", probs = c(.1, .5, .9))
+```
+
+Compare models.
+
+```{r}
+library(loo)
+ll12_1 <- extract_log_lik(fit12_1)
+ll12_2 <- extract_log_lik(fit12_2)
+reff12_1 <- relative_eff(ll12_1, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+reff12_2 <- relative_eff(ll12_2, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+
+waic12_1 <- waic(ll12_1, r_eff = reff12_1, cores = 2)
+waic12_2 <- waic(ll12_2, r_eff = reff12_2, cores = 2)
+loo::compare(waic12_1, waic12_2)
+
+loo12_1 <- loo(ll12_1, r_eff = reff12_1, cores = 2)
+loo12_2 <- loo(ll12_2, r_eff = reff12_1, cores = 2)
+loo::compare(loo12_1, loo12_2)
+```
+
+Review estimates for each tank.
+
+```{r}
+post12_2 <- as.data.frame(fit12_2, pars = c('alpha', 'sigma', 'a_tank'))
+d$propsurv_est <- post12_2[,-c(1:2)] %>% colMeans %>% plogis
+
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_vline(xintercept = c(16.5, 32.5)) +
+  geom_hline(yintercept = plogis(mean(post12_2$alpha)), linetype = 'dashed') +
+  geom_point(aes(x = tank, y = propsurv), color = 'dodgerblue') +
+  geom_point(aes(x = tank, y = propsurv_est), shape = 21) +
+  scale_x_continuous(limits = c(0, 48), breaks = c(1, 16, 32, 48)) +
+  annotate('text', x = 8, y = 0, label = 'Small tanks', hjust = 0.5) +
+  annotate('text', x = 16+8, y = 0, label = 'Medium tanks', hjust = 0.5) +
+  annotate('text', x = 32+8, y = 0, label = 'Large tanks', hjust = 0.5) +
+  labs(x = 'Tank', y = 'Proportion survived')
+
+```
+
+Simulate survival rates.
+
+```{r}
+for(i in 1:100) 
+  curve(dnorm(x, post12_2$alpha[i], post12_2$sigma[i]), 
+        add = T, 
+        col = alpha('black', .2), 
+        xlim = c(-3, 4), 
+        ylim = c(0, .35), 
+        xlab = 'log-odds survival', 
+        ylab = 'Density')
+```
+
+
+
+```{r}
+sim_tanks <- 
+  rnorm(8000, post12_2$alpha, post12_2$sigma) %>% 
+  plogis
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_density(aes(sim_tanks), fill = 'skyblue') +
+  labs(x = "Probability survival", y = "Density")
+```
+
+## 12.2 Varying effects and the underfitting/overfitting trade-off
+
+Assign values to the parameters.
+
+```{r}
+a <- 1.4
+sigma <- 1.5
+nponds <- 60
+ni <- as.integer( rep( c(5, 15, 25, 35), each = 15))
+a_pond <- rnorm(nponds, mean = a, sd = sigma)
+dsim <- data.frame(pond = 1:nponds, ni=ni, true_a = a_pond)
+```
+
+
+### 12.2.3 Simulate survivors
+
+```{r}
+dsim$si <- rbinom(nponds, prob = plogis(dsim$true_a), size = dsim$ni)
+```
+
+
+### 12.2.4 compute the no-pooling estimates
+
+
+```{r}
+dsim$no_pool <- dsim$si / dsim$ni
+```
+
+### 12.2.5 compute the partial-pooling estimates
+
+```{stan output.var="m12_3"}
+data {
+  int N;
+  int N_ponds;
+  int pond[N];
+  int si[N];
+  int ni[N];
+}
+parameters {
+  real a;
+  real<lower=0> sigma;
+  vector[N_ponds] a_pond;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a | 0, 1);
+  target += cauchy_lpdf(sigma | 0, 1);
+  target += normal_lpdf(a_pond | a, sigma);
+  for(i in 1:N) p[i] = inv_logit(a_pond[pond[i]]);
+  target += binomial_lpmf(si | ni, p);
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(dsim),
+  N_ponds = max(dsim$pond),
+  pond = dsim$pond,
+  si = dsim$si,
+  ni = dsim$ni
+)
+
+fit12_3 <- sampling(m12_3, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summarise model.
+
+```{r}
+print(fit12_3, probs = c(.1, .5, .9))
+```
+
+
+```{r}
+post12_3 <- as.data.frame(fit12_3, pars = 'a_pond')
+dsim$partpool <- plogis(colMeans(post12_3))
+dsim <- dsim %>% 
+  mutate(p_true = plogis(true_a),
+         nopool_err = abs(no_pool - p_true),
+         partpool_err = abs(partpool - p_true)) %>%
+  group_by(ni) %>% 
+  mutate(np_err_mean = mean(nopool_err),
+         pp_err_mean = mean(partpool_err)) %>% 
+  ungroup
+
+ggplot(dsim) + theme_tufte(base_family = 'sans') +
+  geom_point(aes(x = pond, y = nopool_err), color = 'dodgerblue') +
+  geom_point(aes(x = pond, y = partpool_err), shape = 21) +
+  geom_line(aes(x = pond, y = np_err_mean, group = ni), color = 'dodgerblue') +
+  geom_line(aes(x = pond, y = pp_err_mean, group = ni), linetype = 'dashed') +
+  geom_vline(xintercept = 15 * seq(3) + .5) +
+  annotate('text', x = 8, y = 0.4, label = 'tiny (5)') +
+  annotate('text', x = 23, y = 0.4, label = 'small (15)') +
+  annotate('text', x = 38, y = 0.4, label = 'medium (25)') +
+  annotate('text', x = 53, y = 0.4, label = 'large (35)') +
+  labs(x = 'pond', y = 'absolute error')
+  
+```
+
+
+## 12.3 More than one type of cluster
+
+### 12.3.1 multilevel chimpanzees
+
+Write model
+
+```{stan output.var="m12_4"}
+data {
+  int N;
+  int C[N];
+  int P[N];
+  int N_actors;
+  int actor[N];
+  int L[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+  real<lower=0> sigma_actor;
+  vector[N_actors] a_actor;
+}
+model {
+  vector[N] p;
+  for (i in 1:N) p[i] = a + a_actor[actor[i]] + (bp + bpc * C[i]) * P[i];
+
+  target += normal_lpdf( a | 0, 10);
+  target += normal_lpdf( bp | 0, 10);
+  target += normal_lpdf( bpc | 0, 10);
+  target += normal_lpdf( a_actor | 0, sigma_actor);
+  target += cauchy_lpdf(sigma_actor | 0, 1);
+
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for (i in 1:N) {
+    p[i] = a + a_actor[actor[i]] + (bp + bpc * C[i]) * P[i];
+    log_lik[i] = binomial_logit_lpmf(L[i] | 1, p[i]);
+  }
+  }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+data('chimpanzees', package = 'rethinking')
+d <- chimpanzees; rm(chimpanzees)
+dat <- list(
+  N = NROW(d),
+  C = d$condition,
+  P = d$prosoc_left,
+  N_actors = max(d$actor),
+  actor = d$actor,
+  L = d$pulled_left
+)
+
+fit12_4 <- sampling(m12_4, data = dat, iter = 4000, chains = 4, cores = 4)
+```
+
+Model summary
+
+```{r}
+print(fit12_4, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+
+```{r}
+post12_4 <- as.data.frame(fit12_4)
+total_a_actor <- sweep(post12_4[,5:11], 2, FUN = "+", post12_4$a) %>% colMeans
+print(total_a_actor, digits = 2)
+```
+
+### 12.3.2 Two types of cluster
+
+```{stan output.var="m12_5"}
+data {
+  int N;
+  int N_actors;
+  int N_blocks;
+  int actors[N];
+  int blocks[N];
+  int C[N];
+  int P[N];
+  int L[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+  vector[N_actors] a_actor;
+  vector[N_blocks] a_block;
+  real<lower=0> sigma_actor;
+  real<lower=0> sigma_block;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf( a | 0, 10);
+  target += normal_lpdf( bp | 0, 10);
+  target += normal_lpdf( bpc | 0, 10);
+  target += normal_lpdf( a_actor | 0, sigma_actor);
+  target += normal_lpdf( a_block | 0, sigma_block);
+  target += cauchy_lpdf( sigma_actor | 0, 5);
+  target += cauchy_lpdf( sigma_block | 0, 5);
+
+  for(i in 1:N) p[i] = a + a_actor[actors[i]] + a_block[blocks[i]] + (bp + bpc * C[i]) * P[i];
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(i in 1:N) {
+    p[i] = a + a_actor[actors[i]] + a_block[blocks[i]] + (bp + bpc * C[i]) * P[i];
+    log_lik[i] = binomial_logit_lpmf(L[i] | 1, p[i]);  
+
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  C = d$condition,
+  P = d$prosoc_left,
+  N_actors = max(d$actor),
+  N_blocks = max(d$block),
+  actors = d$actor,
+  blocks = d$block,
+  L = d$pulled_left
+)
+
+fit12_5 <- sampling(m12_5, data = dat, iter = 4000, chains = 4, cores = 4)
+```
+
+Model summary
+
+```{r}
+print(fit12_5, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+Look at the sigmas.
+
+```{r}
+post12_5 <- as.data.frame(fit12_5)
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_density(aes(post12_5$sigma_actor)) +
+  geom_density(aes(post12_5$sigma_block))
+```
+
+Compare models
+
+```{r}
+ll12_4 <- extract_log_lik(fit12_4)
+ll12_5 <- extract_log_lik(fit12_5)
+
+reff12_4 <- relative_eff(ll12_4, chain_id = c(rep(1, 2000), rep(2, 2000), rep(3, 2000), rep(4, 2000)), cores =4)
+reff12_5 <- relative_eff(ll12_5, chain_id = c(rep(1, 2000), rep(2, 2000), rep(3, 2000), rep(4, 2000)), cores =4)
+
+waic12_4 <- waic(ll12_4, r_eff = reff12_4, cores = 2)
+waic12_5 <- waic(ll12_5, r_eff = reff12_5, cores = 2)
+loo::compare(waic12_4, waic12_5)
+
+loo12_4 <- loo(ll12_4, r_eff = reff12_4, cores = 2)
+loo12_5 <- loo(ll12_5, r_eff = reff12_5, cores = 2)
+loo::compare(loo12_4, loo12_5)
+
+
+```
+
+## 12.4 Multilevel posterior predictions
+
+### 12.4.1 posterior prediction for same clusters
+
+```{r}
+nd <- data.frame(actor = 1, 
+                 P = c(0, 1, 0, 1), 
+                 C = c(0, 0, 1, 1))
+
+f_mu <- function(actor, C, P, new = F) {
+  logodds <- matrix()
+  if( new == F)
+    logodds <- post12_4[,'a'] + post12_4[,4+actor] + (post12_4[,'bp'] + post12_4[,'bpc'] * C) * P
+  else logodds <- post12_4[,'a'] + (post12_4[,'bp'] + post12_4[,'bpc'] * C) * P
+  return(logodds)
+}
+
+logodds <- mapply(f_mu, actor =nd$actor, C = nd$C, P = nd$P)
+p_mu <- plogis(logodds)
+p_mu_mean <- apply(p_mu, 2, mean)
+p_mu_hpdi <- apply(p_mu, 2, rethinking::HPDI)
+
+nd <- nd %>% mutate(PC = interaction(P, C, sep = '/'),
+                    p_mu = p_mu_mean,
+                    p_mu_hpdi_l = p_mu_hpdi[1,],
+                    p_mu_hpdi_h = p_mu_hpdi[2,])
+
+ggplot(nd) + theme_tufte(base_family = 'sans') +
+  geom_ribbon(aes(x = 1:4, 
+                  ymin = p_mu_hpdi_l,
+                  ymax = p_mu_hpdi_h),
+              alpha = .1) +
+  geom_line(aes(x = 1:4, 
+                y = p_mu)) +
+  scale_x_continuous(breaks = 1:4, labels = nd$PC) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = 'Prosocial Left/Condition', y = 'Proportion pulled left', subtitle = "Actor 1")
+
+```
+
+### 12.4.2 posterior prediction with new clusters
+
+Review average actor.
+
+```{r}
+nd <- data.frame(actor = 0, 
+                 P = c(0, 1, 0, 1), 
+                 C = c(0, 0, 1, 1))
+
+logodds <- mapply(f_mu, actor =nd$actor, C = nd$C, P = nd$P, new = T)    
+p_mu <- plogis(logodds)
+p_mu_mean <- apply(p_mu, 2, mean)
+p_mu_hpdi <- apply(p_mu, 2, rethinking::PI, prob = .8)
+
+nd <- nd %>% mutate(PC = interaction(P, C, sep = '/'),
+                    p_mu = p_mu_mean,
+                    p_mu_hpdi_l = p_mu_hpdi[1,],
+                    p_mu_hpdi_h = p_mu_hpdi[2,])
+
+p1 <- ggplot(nd) + theme_tufte(base_family = 'sans') +
+  geom_ribbon(aes(x = 1:4, 
+                  ymin = p_mu_hpdi_l,
+                  ymax = p_mu_hpdi_h),
+              alpha = .1) +
+  geom_line(aes(x = 1:4, 
+                y = p_mu)) +
+  scale_x_continuous(breaks = 1:4, labels = nd$PC) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = 'Prosocial Left/Condition', y = 'Proportion pulled left', subtitle = 'Average Actor')
+
+```
+
+Get marginal of actors.
+
+```{r}
+a_actor_sims <- rnorm(8000, 0, post12_4$sigma_actor)
+sim_logodds <- logodds + a_actor_sims
+sim_mu <- plogis(sim_logodds)
+
+sim_mu_mean <- apply(sim_mu, 2, mean)
+sim_mu_hpdi <- apply(sim_mu, 2, rethinking::PI, prob = .8)
+
+nd <- nd %>% mutate(sim_mu = sim_mu_mean,
+                    sim_mu_hpdi_l = sim_mu_hpdi[1,],
+                    sim_mu_hpdi_h = sim_mu_hpdi[2,])
+
+p2 <- ggplot(nd) + theme_tufte(base_family = 'sans') +
+  geom_ribbon(aes(x = 1:4, 
+                  ymin = sim_mu_hpdi_l,
+                  ymax = sim_mu_hpdi_h),
+              alpha = .1) +
+  geom_line(aes(x = 1:4, 
+                y = sim_mu)) +
+  scale_x_continuous(breaks = 1:4, labels = nd$PC) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = 'Prosocial Left/Condition', y = 'Proportion pulled left', subtitle = 'Marginal of Actor')
+
+```
+
+Show 50 simulated actors.
+
+```{r}
+p3 <- ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(aes(x = rep(1:4, 50), 
+                y = as.vector(t(sim_mu[1:50,])), 
+                group = rep(1:50, each = 4))) + 
+  labs(x = 'Prosocial Left / Condition', y = 'Proportion pulled left', subtitle = '50 Simulations of actor')
+```
+
+
+```{r, fig.width=8}
+library(gridExtra)
+grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+### 12.4.3 focus and multilevel prediction
+
+Load data.
+
+```{r}
+data('Kline', package = 'rethinking')
+d <- Kline; rm(Kline)
+```
+
+Code model in Stan.
+
+```{stan output.var="m12_6"}
+data {
+  int N;
+  int T[N];
+  int N_societies;
+  int society[N];
+  int P[N];
+}
+parameters {
+  real alpha;
+  vector[N_societies] a_society;
+  real bp;
+  real<lower=0> sigma_society;
+}
+model {
+  vector[N] mu;
+  target += normal_lpdf(alpha | 0, 10);
+  target += normal_lpdf(bp | 0, 1);
+  target += cauchy_lpdf(sigma_society | 0, 1);
+  target += normal_lpdf(a_society | 0, sigma_society);
+  for(i in 1:N) mu[i] = alpha + a_society[society[i]] + bp * log(P[i]);
+  target += poisson_log_lpmf(T | mu);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(i in 1:N) {
+    mu[i] = alpha + a_society[society[i]] + bp * log(P[i]);
+    log_lik[i] = poisson_log_lpmf(T[i] | mu[i]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  T = d$total_tools,
+  N_societies = 10,
+  society = 1:10,
+  P = d$population
+)
+
+fit12_6 <- sampling(m12_6, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Model summary
+
+```{r}
+print(fit12_6, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+Look at effective parameters.
+
+```{r}
+ll12_6 <- extract_log_lik(fit12_6)
+reff12_6 <- relative_eff(ll12_6, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+waic12_6 <- waic(ll12_6, r_eff = reff12_6, cores = 2)
+waic12_6
+```
+
+Posterior predictions to visualize the overdispersion
+
+```{r}
+nd <- data.frame(
+  P = exp(seq(6, 14, length.out = 30)),
+  society = rep(1, 30)
+  )
+
+post12_6 <- as.data.frame(fit12_6, include = F, pars = 'log_lik')
+
+f_mu <- function(P) post12_6[, 'alpha'] + post12_6[, 'bp'] * log(P)
+sim_mu <- mapply(f_mu, P = nd$P)
+sim_sigma <- rnorm(1000, 0, post12_6$sigma_society)
+sim <- sim_mu + sim_sigma
+sim_mean <- apply(sim, 2, mean)
+sim_hpdi97 <- apply(sim, 2, rethinking::PI, prob = .97)
+sim_hpdi89 <- apply(sim, 2, rethinking::PI, prob = .89)
+sim_hpdi67 <- apply(sim, 2, rethinking::PI, prob = .67)
+nd <- nd %>% mutate(sim_mean = sim_mean,
+                    sim_hpdi_l97 = sim_hpdi97[1,],
+                    sim_hpdi_h97 = sim_hpdi97[2,],
+                    sim_hpdi_l89 = sim_hpdi89[1,],
+                    sim_hpdi_h89 = sim_hpdi89[2,],
+                    sim_hpdi_l67 = sim_hpdi67[1,],
+                    sim_hpdi_h67 = sim_hpdi67[2,])
+```
+
+Plot it.
+
+```{r}
+ggplot(nd) + theme_tufte(base_family = 'sans') +
+  geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l97), ymax = exp(sim_hpdi_h97)), alpha = .1) +
+  geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l89), ymax = exp(sim_hpdi_h89)), alpha = .1) +
+  geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l67), ymax = exp(sim_hpdi_h67)), alpha = .1) +
+  geom_line(aes(x = log(P), y = exp(sim_mean))) +
+  theme(legend.position = "") + 
+  coord_fixed(ratio = .1, xlim = c(6, 13), ylim = c(0, 70)) +
+  scale_x_continuous(breaks = seq(7, 12, by = 1)) + 
+  scale_y_continuous(breaks = seq(0, 70, by = 10)) +
+  labs(x = 'log population', y = 'total tools')
+```
+
+
+
+

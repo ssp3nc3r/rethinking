@@ -1,0 +1,473 @@
+---
+title: "Chapter 11"
+author: "Scott Spencer"
+date: "8/28/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+load in data
+
+```{r}
+data('Trolley', package = 'rethinking')
+d <- Trolley; rm(Trolley)
+```
+
+Plots
+
+```{r}
+p1 <- d %>% ggplot() + theme_tufte(base_family = 'sans') + geom_bar(aes(x = as.factor(response)), width = .035)
+```
+
+```{r}
+p2 <- d %>% 
+  group_by(response) %>% 
+  summarise(prop = n() / NROW(d)) %>% 
+  mutate(cumprob = cumsum(prop)) %>%
+  ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(aes(x = response, y = cumprob)) +
+  geom_point(aes(x = response, y = cumprob), shape = 21, fill = 'white') +
+  scale_x_continuous(breaks = seq(1, 7)) +
+  scale_y_continuous(breaks = seq(.1, 1, by = .1)) 
+```
+
+```{r}
+p3 <- d %>% 
+  group_by(response) %>% 
+  summarise(prop = n() / NROW(d)) %>% 
+  mutate(cumprob = cumsum(prop)) %>% 
+  mutate(lco = log(cumprob/(1 - cumprob))) %>%
+  filter(lco < Inf) %>%
+  ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(aes(x = response, y = lco)) +
+  geom_point(aes(x = response, y = lco), shape = 21, fill = 'white') +
+  scale_x_continuous(breaks = seq(1, 7)) +
+  scale_y_continuous(breaks = seq(-1, 1, by = 1)) 
+```
+
+```{r}
+library(gridExtra)
+grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+Create a first model, no predictors.
+
+```{stan output.var="m11_1"}
+data{
+    int<lower=1> N;
+    int response[N];
+}
+parameters{
+    ordered[6] cutpoints;
+}
+model{
+    vector[N] phi;
+    cutpoints ~ normal( 0 , 10 );
+    for ( i in 1:N ) 
+      phi[i] = 0;
+    for ( i in 1:N )
+      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] phi;
+  for ( i in 1:N ) 
+      phi[i] = 0;
+  for ( i in 1:N )
+      log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  response = d$response
+)
+
+fit11_1 <- sampling(m11_1, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Create second model, including predictors.
+
+```{stan output.var="m11_2"}
+ data{
+    int<lower=1> N;
+    int response[N];
+    int action[N];
+    int intention[N];
+    int contact[N];
+}
+parameters{
+    ordered[6] cutpoints;
+    real bA;
+    real bI;
+    real bC;
+}
+model{
+    vector[N] phi;
+    cutpoints ~ normal( 0 , 10 );
+    for ( i in 1:N ) 
+      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
+    for ( i in 1:N )
+      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+    target += normal_lpdf(bA | 0, 10);
+    target += normal_lpdf(bI | 0, 10);
+    target += normal_lpdf(bC | 0, 10);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] phi;
+    for ( i in 1:N ) 
+      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
+    for ( i in 1:N )
+      log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  response = d$response,
+  action = d$action,
+  intention = d$intention,
+  contact = d$contact
+)
+
+fit11_2 <- sampling(m11_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Create third model, including an interaction.
+
+```{stan output.var="m11_3"}
+ data{
+    int<lower=1> N;
+    int response[N];
+    int action[N];
+    int intention[N];
+    int contact[N];
+}
+parameters{
+    ordered[6] cutpoints;
+    real bA;
+    real bI;
+    real bC;
+    real bAI;
+    real bCI;
+}
+model{
+    vector[N] phi;
+    cutpoints ~ normal( 0 , 10 );
+    for ( i in 1:N ) 
+      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i] + 
+               bAI * action[i] * intention[i] + bCI * contact[i] * intention[i];
+    for ( i in 1:N )
+      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+    target += normal_lpdf(bA | 0, 10);
+    target += normal_lpdf(bI | 0, 10);
+    target += normal_lpdf(bC | 0, 10);
+    target += normal_lpdf(bAI | 0, 10);
+    target += normal_lpdf(bCI | 0, 10);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] phi;
+    for ( i in 1:N ) 
+      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i] + 
+               bAI * action[i] * intention[i] + bCI * contact[i] * intention[i];
+    for ( i in 1:N )
+      log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  response = d$response,
+  action = d$action,
+  intention = d$intention,
+  contact = d$contact
+)
+
+fit11_3 <- sampling(m11_3, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Compare models.
+
+```{r}
+library(loo)
+ll11_1 <- extract_log_lik(fit11_1)
+ll11_2 <- extract_log_lik(fit11_2)
+ll11_3 <- extract_log_lik(fit11_3)
+
+reff11_1 <- relative_eff(ll11_1, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+reff11_2 <- relative_eff(ll11_2, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+reff11_3 <- relative_eff(ll11_3, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+
+waic11_1 <- waic(ll11_1, r_eff = reff11_1, cores = 2)
+waic11_2 <- waic(ll11_2, r_eff = reff11_2, cores = 2)
+waic11_3 <- waic(ll11_3, r_eff = reff11_3, cores = 2)
+loo::compare(waic11_1, waic11_2, waic11_3)
+```
+
+Plot 11.3
+
+```{r}
+post11_3 <- as.data.frame(fit11_3, 
+                          pars = c('cutpoints', 'bA', 'bI', 'bC', 'bAI', 'bCI'))
+post11_3 <- post11_3 %>% 
+  mutate(prob)
+
+f_phi <- function(action, intention, contact)  with(post11_3, 
+                         bA * action + bI * intention + bC * contact + 
+               bAI * action * intention + bCI * contact * intention)
+```
+
+
+```{r}
+# scenario 1: show probability of choices for given action, contact across intention
+phi_11_3 <- mapply(f_phi, action = 0, intention = c(0,1), contact = 0)
+
+pK <- array(dim = c(1000, 2, 6))
+for(i in seq(1000))
+  pK[i,,] <- rethinking::pordlogit(1:6, phi_11_3[i,], post11_3[i, 1:6])
+
+pK <- plyr::adply(pK, c(1, 3))
+colnames(pK) <- c('iter', 'cutpoint', 'var1', 'var2')
+
+# create plot 1
+pK_cuts <- pK %>% group_by(cutpoint) %>% summarise(y_lab = mean(var1))
+p1 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = 0, xend = 1,  y = var1, yend = var2), alpha = .01, color = 'skyblue' ) +
+  scale_x_continuous(breaks = c(0, 1)) + scale_y_continuous(limits = c(0, 1), breaks = c(0.0, .5, 1)) +
+  geom_text(data = pK_cuts, aes(x = -.03, y = y_lab, label = cutpoint)) +
+  theme(panel.border = element_rect(colour = "gray30", fill=NA, size=1)) +
+  labs(x = "Intention", y = "Probability", subtitle = "action = 0, contact = 0")
+```
+
+
+```{r}
+# scenario 2: show probability of choices for given action, contact across intention
+phi_11_3 <- mapply(f_phi, action = 1, intention = c(0,1), contact = 0)
+
+pK <- array(dim = c(1000, 2, 6))
+for(i in seq(1000))
+  pK[i,,] <- rethinking::pordlogit(1:6, phi_11_3[i,], post11_3[i, 1:6])
+
+pK <- plyr::adply(pK, c(1, 3))
+colnames(pK) <- c('iter', 'cutpoint', 'var1', 'var2')
+
+# create plot 1
+pK_cuts <- pK %>% group_by(cutpoint) %>% summarise(y_lab = mean(var1))
+p2 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = 0, xend = 1,  y = var1, yend = var2), alpha = .01, color = 'skyblue' ) +
+  scale_x_continuous(breaks = c(0, 1)) + scale_y_continuous(limits = c(0, 1), breaks = c(0.0, .5, 1)) +
+  geom_text(data = pK_cuts, aes(x = -.03, y = y_lab, label = cutpoint)) +
+  theme(panel.border = element_rect(colour = "gray30", fill=NA, size=1)) +
+  labs(x = "Intention", y = "Probability", subtitle = "action = 1, contact = 0")
+```
+
+```{r}
+# scenario 3: show probability of choices for given action, contact across intention
+phi_11_3 <- mapply(f_phi, action = 0, intention = c(0,1), contact = 1)
+
+pK <- array(dim = c(1000, 2, 6))
+for(i in seq(1000))
+  pK[i,,] <- rethinking::pordlogit(1:6, phi_11_3[i,], post11_3[i, 1:6])
+
+pK <- plyr::adply(pK, c(1, 3))
+colnames(pK) <- c('iter', 'cutpoint', 'var1', 'var2')
+
+# create plot 1
+pK_cuts <- pK %>% group_by(cutpoint) %>% summarise(y_lab = mean(var1))
+p3 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = 0, xend = 1,  y = var1, yend = var2), alpha = .01, color = 'skyblue' ) +
+  scale_x_continuous(breaks = c(0, 1)) + scale_y_continuous(limits = c(0, 1), breaks = c(0.0, .5, 1)) +
+  theme(panel.border = element_rect(colour = "gray30", fill=NA, size=1)) +
+  geom_text(data = pK_cuts, aes(x = -.03, y = y_lab, label = cutpoint)) +
+  labs(x = "Intention", y = "Probability", subtitle = "action = 0, contact = 1")
+```
+
+```{r}
+grid.arrange(p1, p2, p3, nrow = 1)
+```
+
+
+### 11.2.1 example: zero-inflated poisson
+
+Setup data
+
+```{r}
+prob_drink <- 0.2
+rate_work <- 1
+N <- 365
+drink <- rbinom(N, 1, prob_drink)
+y <- (1 - drink) * rpois(N, rate_work)
+d <- data.frame(y = y,
+                drink = drink)
+```
+
+plot data
+
+
+```{r}
+zeros_drink <- sum(drink)
+zeros_work <- sum(y == 0 & drink == 0)
+zeros_total <- sum(y == 0)
+d <- data.frame(y, drink)
+```
+
+```{r}
+ggplot(d) + 
+  theme_tufte(base_family = 'sans') + 
+  geom_bar(aes(y), width = .04) + 
+  geom_bar(aes(y, group = as.factor(drink==0), fill = drink), width = .04) +
+  scale_x_continuous(breaks = seq(0, 6)) + 
+  theme(legend.position = '')
+```
+
+Write a model.
+
+```{stan output.var="m11_4"}
+data {
+  int N;
+  int y[N];
+}
+parameters {
+  real ap;
+  real al;
+}
+model {
+  vector[N] p;
+  vector[N] lambda;
+  target += normal_lpdf(ap | 0, 1);
+  target += normal_lpdf(al | 0, 10);
+  
+  for(i in 1:N){
+    p[i] = inv_logit(ap);
+    lambda[i] = exp(al);
+    if(y[i] == 0)
+      target += log_sum_exp(bernoulli_lpmf(1 | p[i]), 
+                            bernoulli_lpmf(0 | p[i]) + poisson_lpmf(y[i] | lambda[i]));
+    else
+      target += bernoulli_lpmf(0 | p[i]) + poisson_lpmf(y[i] | lambda[i]);
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = length(y),
+  y = y
+)
+
+fit11_4 <- sampling(m11_4, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit11_4, probs = c(.1, .5, .9))
+```
+
+### 11.3.1 Beta binomial
+
+Load data.
+
+```{r}
+data('UCBadmit', package = 'rethinking')
+d <- UCBadmit; rm(UCBatmit)
+```
+
+Write the model.
+
+```{stan output.var="m11_5"}
+data {
+  int N;
+  int admit[N];
+  int applications[N];
+}
+parameters {
+  real a;
+  real<lower=0> theta;
+}
+model {
+  vector[N] pbar;
+  
+  target += normal_lpdf(a | 0, 2);
+  target += exponential_lpdf(theta | 1);
+  
+  for(i in 1:N) pbar[i] = a;
+  pbar = inv_logit(pbar);
+  
+  target += beta_binomial_lpmf(admit | applications, pbar * theta, (1 - pbar) * theta);
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  admit = d$admit,
+  applications = d$applications
+)
+
+fit11_5 <- sampling(m11_5, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit11_5, probs = c(.1, .5, .9))
+```
+
+Average probatility of admission across departments.
+
+```{r}
+post11_5 <- as.data.frame(fit11_5)
+post11_5$a %>% plogis() %>% quantile(probs = c(.025, .5, .975))
+```
+
+Consider correlation between pbar and theta.
+
+```{r}
+post11_5 <- post11_5 %>% mutate(p = plogis(a))
+post_mean <- post11_5 %>% summarise_all(mean)
+
+for(i in 1:100) {
+  curve(dbeta(x, 
+              post11_5[i,]$p * post11_5[i,]$theta, 
+              (1 - post11_5[i,]$p) * post11_5[i,]$theta), 
+        from = 0, to = 1, add = T, col = alpha('black', .2),
+        xlab = 'Probability of admit', ylab = 'Density')
+}
+
+curve(dbeta(x, 
+              post_mean$p * post_mean$theta, 
+              (1 - post_mean$p) * post_mean$theta), 
+      from = 0, to = 1, 
+      add = T, lwd = 2, ylim = c(0, 3))
+```
+
+### 11.3.2 Negative-binomial or negative-poisson
+
+
+
+

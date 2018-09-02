@@ -1,0 +1,143 @@
+---
+title: "Chapter 13"
+author: "Scott Spencer"
+date: "9/1/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+
+## 13.1 Varying slopes by construction
+
+### 13.1.1 simulate the population
+
+Simulate data
+
+```{r}
+a <- 3.5
+b <- (-1)
+sigma_a <- 1
+sigma_b <- 0.5
+rho <- (-0.7)
+Mu <- c(a, b)
+cov_ab <- sigma_a * sigma_b * rho
+```
+
+Setup the covariance matrix
+
+```{r}
+# approach 1
+Sigma <- matrix( c(sigma_a^2, cov_ab, cov_ab, sigma_b^2), ncol = 2 )
+
+# approach 2
+sigmas <- c(sigma_a, sigma_b)
+Rho <- matrix(c(1, rho, rho, 1), nrow = 2)
+Sigma <- diag(sigmas) %*% Rho %*% diag(sigmas)
+
+```
+
+simulate cafes
+
+```{r}
+N_cafes <- 20
+library(MASS)
+set.seed(5)
+vary_effects <- mvrnorm(N_cafes, Mu, Sigma)
+```
+
+separate the intercepts and slopes
+
+```{r}
+a_cafe <- vary_effects[,1]
+b_cafe <- vary_effects[,2]
+```
+
+
+```{r}
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_point(aes(a_cafes, b_cafes), shape = 21, color = 'dodgerblue') +
+  stat_ellipse(aes(a_cafes, b_cafes), level = .50, alpha = .1) +
+  stat_ellipse(aes(a_cafes, b_cafes), level = .89, alpha = .1) +
+  stat_ellipse(aes(a_cafes, b_cafes), level = .97, alpha = .1) +
+  labs(x = 'intercepts (a_cafes)', y = 'slopes (b_cafes)')
+```
+
+### 13.1.2 simulate observations
+
+```{r}
+N_visits <- 10
+afternoon <- rep(0:1, N_visits * N_cafes / 2)
+cafe_id <- rep(1:N_cafes, each = N_visits)
+mu <- a_cafe[cafe_id] + b_cafe[cafe_id] * afternoon
+sigma <- 0.5
+wait <- rnorm(N_visits * N_cafes, mu, sigma)
+d <- data.frame(cafe = cafe_id, afternoon = afternoon, wait = wait)
+```
+
+### 13.1.3 the varying slopes model
+
+Code a model in Stan.
+
+```{r}
+m13.1 <- rethinking::map2stan(
+  alist(
+    wait ~ dnorm(mu, sigma),
+    mu <- a_cafe[cafe] + b_cafe[cafe] * afternoon,
+    c(a_cafe, b_cafe)[cafe] ~ dmvnorm2(c(a, b), sigma_cafe, Rho),
+    a ~ dnorm(0, 10),
+    b ~ dnorm(0, 10),
+    sigma_cafe ~ dcauchy(0, 2),
+    sigma ~ dcauchy(0, 2),
+    Rho ~ dlkjcorr(2)
+  ),
+  data = d, iter = 500, chains = 1
+)
+rethinking::stancode(m13.1)
+```
+
+
+```{stan output.var="m13_1"}
+data {
+  int N;
+  int N_cafe;
+  int cafe_id[N];
+  int W[N];
+  int A[N];
+}
+parameters {
+  real a;
+  real b;
+  vector[N_cafe] a_cafe;
+  vector[N_cafe] b_cafe;
+  real<lower=0> sigma;
+  vector<lower=0>[2] sigma_cafe;
+  corr_matrix[2] Rho;
+  //vector[2] Mu_ab;
+}
+transformed parameters {
+  vector[2] Mu_ab = [a, b]';
+  vector[2] v_a_cafeb_cafe[N_cafe];
+  cov_matrix[2] SRS_sigma_cafeRho;
+  
+  for ( j in 1:N_cafe ) {
+    v_a_cafeb_cafe[j,1] = a_cafe[j];
+    v_a_cafeb_cafe[j,2] = b_cafe[j];
+    }
+  
+  SRS_sigma_cafeRho = quad_form_diag(Rho,sigma_cafe);
+}
+model {
+  vector[N] mu;
+  for(i in 1:N) mu[i] = a_cafe[cafe_id[i]] + b_cafe[cafe_id[i]] * A[i];
+  target += normal_lpdf(W | mu, sigma);
+  target += multi_normal_lpdf(v_a_cafeb_cafe | Mu_ab , SRS_sigma_cafeRho );
+  
+}
+
+```
+

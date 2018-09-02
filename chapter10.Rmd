@@ -698,8 +698,619 @@ ggplot(d) + theme_tufte(base_family = 'sans') +
 
 ## 10.2 Poisson regression
 
+load data.
+
+```{r}
+data("Kline", package = "rethinking")
+d <- Kline; rm(Kline)
+d <- d %>% 
+  mutate(log_pop = log(population),
+         contact_high = as.integer(contact == "high"))
+```
+
+Code model in Stan
+
+```{stan output.var="m10_10"}
+data {
+  int N;
+  int T[N];
+  int P[N];
+  int C[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bc;
+  real bpc;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = a + bp * log(P[i]) + bc * C[i] + bpc * C[i] * log(P[i]);
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bp | 0, 1);
+  target += normal_lpdf(bc | 0, 1);
+  target += normal_lpdf(bpc | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] lambda;
+  for(i in 1:N) {
+    lambda[i] = a + bp * log(P[i]) + bc * C[i] + bpc * C[i] * log(P[i]);
+    log_lik[i] = poisson_log_lpmf(T[i] | lambda[i]);
+  }
+  }
+}
+```
+
+Organize data and sample from model.
 
 
+```{r}
+dat = list(
+  N = NROW(d),
+  T = d$total_tools,
+  P = d$population,
+  C = d$contact_high
+)
 
+fit10_10 <- sampling(m10_10, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit10_10, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+```{r}
+post10_10 <- as.data.frame(fit10_10)
+post10_10 %>% select(a, bp, bc, bpc) %>% cor() %>% print(digits = 2)
+```
+
+Check whether the interaction has an effect.
+
+```{r}
+lambda_high <- exp(post10_10$a + post10_10$bc + (post10_10$bp + post10_10$bpc) * 8 )
+lambda_low <- exp(post10_10$a + post10_10$bp * 8 )
+
+p <- ggplot() + theme_tufte(base_family = 'sans')
+p1 <- p +
+  geom_density(aes(lambda_high - lambda_low), fill = 'dodgerblue') +
+  geom_vline(xintercept = 0, linetype = 'dashed')
+
+p2 <- p +
+  geom_point(aes(post10_10$bc, post10_10$bpc), color = 'dodgerblue', alpha = .1) +
+  geom_segment(aes(x = rethinking::HPDI(post10_10$bc)[1],
+                   xend = rethinking::HPDI(post10_10$bc)[2],
+                   y = -.2, yend = -.2)) +
+  geom_segment(aes(x = -2.5, xend = -2.5, 
+                   y = rethinking::HPDI(post10_10$bpc)[1],
+                   yend = rethinking::HPDI(post10_10$bpc)[2])) + labs(x = 'bc', y = 'bpc')
+
+library(gridExtra)
+grid.arrange(p1, p2, nrow = 1)
+```
+
+```{r}
+sum(lambda_high - lambda_low > 0) / length(lambda_high)
+```
+
+Remove interaction
+
+```{stan output.var="m10_11"}
+data {
+  int N;
+  int T[N];
+  int P[N];
+  int C[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bc;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = a + bp * log(P[i]) + bc * C[i];
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bp | 0, 1);
+  target += normal_lpdf(bc | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] lambda;
+  for(i in 1:N) {
+    lambda[i] = a + bp * log(P[i]) + bc * C[i];
+    log_lik[i] = poisson_log_lpmf(T[i] | lambda[i]);
+  }
+  }
+}
+```
+
+Remove contact
+
+```{stan output.var="m10_12"}
+data {
+  int N;
+  int T[N];
+  int P[N];
+}
+parameters {
+  real a;
+  real bp;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = a + bp * log(P[i]);
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bp | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] lambda;
+  for(i in 1:N) {
+    lambda[i] = a + bp * log(P[i]);
+    log_lik[i] = poisson_log_lpmf(T[i] | lambda[i]);
+  }
+  }
+}
+```
+
+Remove log population
+
+```{stan output.var="m10_13"}
+data {
+  int N;
+  int T[N];
+  int C[N];
+}
+parameters {
+  real a;
+  real bc;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = a + bc * C[i];
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bc | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] lambda;
+  for(i in 1:N) {
+    lambda[i] = a + bc * C[i];
+    log_lik[i] = poisson_log_lpmf(T[i] | lambda[i]);
+  }
+  }
+}
+```
+
+Intercept only
+
+```{stan output.var="m10_14"}
+data {
+  int N;
+  int T[N];
+}
+parameters {
+  real a;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = a;
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a | 0, 100);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] lambda;
+  for(i in 1:N) {
+    lambda[i] = a;
+    log_lik[i] = poisson_log_lpmf(T[i] | lambda[i]);
+  }
+  }
+}
+```
+
+```{r}
+fit10_11 <- sampling(m10_11, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+dat = list(
+  N = NROW(d),
+  T = d$total_tools,
+  P = d$population
+)
+
+fit10_12 <- sampling(m10_12, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+dat = list(
+  N = NROW(d),
+  T = d$total_tools,
+  C = d$contact_high
+)
+
+fit10_13 <- sampling(m10_13, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+dat = list(
+  N = NROW(d),
+  T = d$total_tools
+)
+
+fit10_14 <- sampling(m10_14, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Compare with waic
+
+```{r}
+library(loo)
+
+fit_list <- list(fit10_10, fit10_11, fit10_12, fit10_13, fit10_14)
+
+# extract log likelihoods
+ll_list <- lapply(fit_list, extract_log_lik) 
+
+# exponentiate
+exp_ll_list <- lapply(ll_list, exp)
+
+# get relative neff
+rel_n_eff_list <- lapply(exp_ll_list, relative_eff, chain_id = c(rep(1, 500), rep(2, 500)))
+
+# loo
+waic_list <- list()
+for(i in 1:5) {
+  waic_list[[i]] <- waic(ll_list[[i]], r_eff = rel_n_eff_list[[i]], cores = 4)
+}
+names(waic_list) <- c('fit10_10', 'fit10_11', 'fit10_12', 'fit10_13', 'fit10_14')
+
+loo::compare(x = waic_list)
+```
+
+Get model weights
+
+```{r}
+# get model weights from loo above
+
+loo_list <- list()
+for(i in 1:5) {
+  loo_list[[i]] <- loo(ll_list[[i]], r_eff = rel_n_eff_list[[i]], cores = 4)
+}
+names(loo_list) <- c('fit10_10', 'fit10_11', 'fit10_12', 'fit10_13', 'fit10_14')
+
+weights <- loo_model_weights(loo_list, method = "pseudobma", BB = F)
+weights
+```
+
+Plot counterfactual predictions with an ensemble
+
+```{r}
+# setup new data from which to predict total tools
+nd <- 
+  expand.grid(log_pop = seq(6, 13, length.out = 30),
+              contact_high = 0:1)
+
+# get posterior parameters of each
+post10_11 <- as.data.frame(fit10_11)
+post10_12 <- as.data.frame(fit10_12)
+
+# get mu, mu interval, prediction interval for three top models
+
+# model 10_10
+
+f_mu_10_10 <- function(P, C) with(post10_10, 
+                            a + bp * P + bc * C + bpc * C * P )
+mu_10_10 <- mapply(f_mu_10_10, P = nd$log_pop, C = nd$contact_high)
+
+# f_sim_10_10 <- function(P, C) with(post10_10, 
+#                             rpois(1e3, a + bp * P + bc * C + bpc * C * P) )
+# sim_10_10 <- mapply(f_sim_10_10, P = nd$log_pop, C = nd$contact_high)
+
+# model 10_11
+
+f_mu_10_11 <- function(P, C) with(post10_11, 
+                            a + bp * P + bc * C )
+mu_10_11 <- mapply(f_mu_10_11, P = nd$log_pop, C = nd$contact_high)
+
+# f_sim_10_11 <- function(P, C) with(post10_11, 
+#                             rpois(1e3, a + bp * P + bc * C) )
+# sim_10_11 <- mapply(f_sim_10_11, P = nd$log_pop, C = nd$contact_high)
+
+# model 10_12
+
+f_mu_10_12 <- function(P) with(post10_12, 
+                            a + bp * P )
+mu_10_12 <- mapply(f_mu_10_12, P = nd$log_pop)
+
+# f_sim_10_12 <- function(P) with(post10_12, 
+#                             rpois(1e3, a + bp * P) )
+# sim_10_12 <- mapply(f_sim_10_12, P = nd$log_pop)
+
+
+# create ensemble: weight mu, interval, and pred interval together
+mu_ensemble <- weights[1] * exp(mu_10_10) + weights[2] * exp(mu_10_11) + weights[3] * exp(mu_10_12) 
+mu_ensemble_mean <- colMeans(mu_ensemble) 
+mu_ens_hpdi <- apply(mu_ensemble, 2, rethinking::HPDI)
+
+# sim_ensemble <- weights[1] * (sim_10_10) + weights[2] * (sim_10_11) + weights[3] * (sim_10_12)
+# sim_ensemble_mean <- colMeans(sim_ensemble)
+# sim_ensemble_hpdi <- apply(sim_ensemble, 2, rethinking::HPDI)
+
+nd <- nd %>%
+  mutate(mu = mu_ensemble_mean,
+         mu_hpdi_l = mu_ens_hpdi[1,],
+         mu_hpdi_h = mu_ens_hpdi[2,],
+         # sim_hpdi_l = sim_ensemble_hpdi[1,],
+         # sim_hpdi_h = sim_ensemble_hpdi[2,],
+         contact_high = as.factor(contact_high))
+
+```
+
+```{r}
+ggplot() + theme_tufte() +
+  geom_point(data = d, aes(x = log_pop, y = total_tools, 
+                 color = as.factor(contact_high))) +
+  geom_ribbon(data = nd, aes(x = log_pop, 
+                  ymin = mu_hpdi_l, ymax = mu_hpdi_h, 
+                  group = contact_high, color = NA, fill = contact_high), alpha = 0.1) +
+  geom_line(data = nd, aes(x = log_pop, y = mu, 
+                group = contact_high, color = contact_high)) +
+  scale_color_manual(values = c("black", "dodgerblue"), aesthetics = c("colour", "fill")) +
+  theme(legend.position = "") + 
+  coord_fixed(ratio = .1, xlim = c(6, 13), ylim = c(0, 70)) +
+  scale_x_continuous(breaks = seq(7, 12, by = 1)) + 
+  scale_y_continuous(breaks = seq(0, 70, by = 10))
+```
+
+
+Review correlations among posterior of parameters
+
+```{r}
+library(GGally)
+post10_10 %>% select(a, bp, bc, bpc) %>% ggpairs() + theme_tufte(base_family = 'sans') 
+```
+
+Two predictors are highly correlated. Centering data may help this.
+
+```{stan output.var="m10_10c"}
+data {
+  int N;
+  int T[N];
+  int P[N];
+  int C[N];
+}
+transformed data {
+  vector[N] log_P_c;
+  for(i in 1:N) log_P_c[i] = log(P[i]) - mean(log(P));
+}
+parameters {
+  real a;
+  real bp;
+  real bc;
+  real bpc;
+}
+model {
+  vector[N] lambda;
+  for (i in 1:N) lambda[i] = a + bp * log_P_c[i] + bc * C[i] + bpc * log_P_c[i] * C[i];
+  target += poisson_log_lpmf(T | lambda);
+  target += normal_lpdf(a| 0, 100);
+  target += normal_lpdf(bp | 0, 10);
+  target += normal_lpdf(bc | 0, 10);
+  target += normal_lpdf(bpc | 0, 10);
+}
+```
+
+```{r}
+dat = list(
+  N = NROW(d),
+  T = d$total_tools,
+  P = d$population,
+  C = d$contact_high
+)
+
+fit10_10c <- sampling(m10_10c, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit10_10c, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+Centering removed the correlations between parameters:
+
+```{r}
+post10_10c <- as.data.frame(fit10_10c)
+post10_10c %>% select(a, bp, bc, bpc) %>% ggpairs() + theme_tufte(base_family = 'sans') 
+```
+
+# 10.2.3 example: exposure and the offset
+
+simulate dummy data
+
+```{r}
+num_days <- 30
+y <- rpois(num_days, 1.5)
+num_weeks <- 4
+y_new <- rpois(num_weeks, .5 * 7)
+y_all <- c(y, y_new)
+exposure <- c(rep(1, 30), rep(7, 4))
+monastery <- c(rep(0, 30), rep(1, 4))
+d <- data.frame(y = y_all, days = exposure, monastery = monastery)
+d <- d %>% mutate(log_days = log(days))
+```
+
+
+```{stan output.var="m10_15"}
+data {
+  int N;
+  int y[N];
+  vector[N] log_days;
+  int monastery[N];
+}
+parameters {
+  real a;
+  real b;
+}
+model {
+  vector[N] lambda;
+  for(i in 1:N) lambda[i] = log_days[i] + a + b * monastery[i];
+  target += poisson_log_lpmf(y | lambda);
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(b | 0, 1);
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  y = d$y,
+  log_days = d$log_days,
+  monastery = d$monastery
+)
+
+fit10_15 <- sampling(m10_15, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+
+```{r}
+print(fit10_15, probs = c(.1, .5, .9))
+```
+
+```{r}
+post10_15 <- as.data.frame(fit10_15)
+lambda_old <- with(post10_15, exp(a))
+lambda_new <- with(post10_15, exp(a + b))
+skim(data.frame(lambda_old, lambda_new))
+```
+
+## 10.3 other count regressions
+
+Simulate career choices
+
+```{r}
+N <- 500
+income <- 1:3
+score <- 0.5 * income
+softmax <- function(x) exp(x) / sum(exp(x))
+p <- softmax(score)
+
+career <- rep(NA, N)
+for(i in 1:N) career[i] <- sample(1:3, size = 1, prob = p)
+```
+
+Code a model in Stan
+
+```{stan output.var="m10_16"}
+data{
+    int<lower=1> N;
+    int career[N];
+}
+parameters{
+    real b;
+}
+model{
+    vector[N] s2;
+    vector[N] s3;
+    target += normal_lpdf(b | 0 , 5 );
+
+    for(i in 1:N) s2[i] = b * 2;
+    for(i in 1:N) s3[i] = b * 3;
+
+    for ( i in 1:N )
+    {
+        vector[3] theta;
+        theta[1] = 0; theta[2] = s2[i]; theta[3] = s3[i]; 
+        target += categorical_lpmf(career[i] | softmax(theta) );
+    }
+}
+```
+
+Organized data and sample from model.
+
+```{r}
+dat <- list(
+  N = N,
+  career = career
+)
+
+fit10_16 <- sampling(m10_16, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit10_16, probs = c(.1, .5, .9))
+```
+
+second example
+
+```{r}
+N <- 100
+family_income <- runif(N)
+b <- (1:-1)
+career <- rep(NA, N)
+for(i in 1:N) {
+  score <- 0.5 * (1:3) + b * family_income[i]
+  p <- softmax(score)
+  career[i] <- sample(1:3, size = 1, prob = p)
+}
+```
+
+```{stan output.var="m10_17"}
+data {
+  int N;
+  int career[N];
+  vector[N] family_income;
+}
+parameters {
+  real a2;
+  real a3;
+  real b2;
+  real b3;
+}
+model {
+    vector[N] s2;
+    vector[N] s3;
+    target += normal_lpdf(a2 | 0 , 5 );
+    target += normal_lpdf(a3 | 0 , 5 );
+    target += normal_lpdf(b2 | 0 , 5 );
+    target += normal_lpdf(b3 | 0 , 5 );
+    
+    for(i in 1:N) s2[i] = a2 + b2 * family_income[i];
+    for(i in 1:N) s3[i] = a3 + b3 * family_income[i];
+    
+    for(i in 1:N) {
+        vector[3] theta;
+        theta[1] = 0; theta[2] = s2[i]; theta[3] = s3[i]; 
+        target += categorical_lpmf(career[i] | softmax(theta) );
+    }
+}
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = N,
+  career = career,
+  family_income = family_income
+)
+
+fit10_17 <- sampling(m10_17, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit10_17, probs = c(.1, .5, .9))
+```
 
 
