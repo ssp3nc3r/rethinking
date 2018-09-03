@@ -83,30 +83,12 @@ d <- data.frame(cafe = cafe_id, afternoon = afternoon, wait = wait)
 
 Code a model in Stan.
 
-```{r}
-m13.1 <- rethinking::map2stan(
-  alist(
-    wait ~ dnorm(mu, sigma),
-    mu <- a_cafe[cafe] + b_cafe[cafe] * afternoon,
-    c(a_cafe, b_cafe)[cafe] ~ dmvnorm2(c(a, b), sigma_cafe, Rho),
-    a ~ dnorm(0, 10),
-    b ~ dnorm(0, 10),
-    sigma_cafe ~ dcauchy(0, 2),
-    sigma ~ dcauchy(0, 2),
-    Rho ~ dlkjcorr(2)
-  ),
-  data = d, iter = 500, chains = 1
-)
-rethinking::stancode(m13.1)
-```
-
-
 ```{stan output.var="m13_1"}
 data {
   int N;
   int N_cafe;
   int cafe_id[N];
-  int W[N];
+  real W[N];
   int A[N];
 }
 parameters {
@@ -117,27 +99,101 @@ parameters {
   real<lower=0> sigma;
   vector<lower=0>[2] sigma_cafe;
   corr_matrix[2] Rho;
-  //vector[2] Mu_ab;
 }
 transformed parameters {
   vector[2] Mu_ab = [a, b]';
   vector[2] v_a_cafeb_cafe[N_cafe];
   cov_matrix[2] SRS_sigma_cafeRho;
-  
-  for ( j in 1:N_cafe ) {
-    v_a_cafeb_cafe[j,1] = a_cafe[j];
-    v_a_cafeb_cafe[j,2] = b_cafe[j];
-    }
-  
+  for ( j in 1:N_cafe ) v_a_cafeb_cafe[j,1:2] = [a_cafe[j], b_cafe[j]]';
   SRS_sigma_cafeRho = quad_form_diag(Rho,sigma_cafe);
 }
 model {
   vector[N] mu;
+  
+  //priors
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(b | 0, 10);
+  target += cauchy_lpdf(sigma | 0 , 2 );
+  target += cauchy_lpdf(sigma_cafe | 0 , 2 );
+  target += lkj_corr_lpdf(Rho | 2 );
+  
+  // linear model  
   for(i in 1:N) mu[i] = a_cafe[cafe_id[i]] + b_cafe[cafe_id[i]] * A[i];
+  
   target += normal_lpdf(W | mu, sigma);
   target += multi_normal_lpdf(v_a_cafeb_cafe | Mu_ab , SRS_sigma_cafeRho );
-  
 }
-
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(i in 1:N) {
+    mu[i] = a_cafe[cafe_id[i]] + b_cafe[cafe_id[i]] * A[i];
+    log_lik[i] = normal_lpdf(W[i] | mu[i], sigma);
+  }
+  }
+}
 ```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  N_cafe = max(d$cafe),
+  cafe_id = d$cafe,
+  W = d$wait,
+  A = d$afternoon
+)
+
+fit13_1 <- sampling(m13_1, data = dat, iter = 5000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit13_1, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+Examine correlation.
+
+```{r}
+rho_prior <- rethinking::rlkjcorr(5000, 2, 2)
+
+post13_1 <- as.data.frame(fit13_1)
+
+ggplot(post13_1) + theme_tufte(base_family = 'sans') +
+  geom_density(aes(x = `Rho[1,2]`), color = 'dodgerblue') +
+  geom_density(aes(x = rho_prior[, 1, 2]), linetype = 'dashed') +
+  annotate('text', x=0.2, y = .75, label = 'prior') +
+  annotate('text', x=0, y = 1.2, label = 'posterior', color = 'dodgerblue') +
+  labs(x = 'correlation')
+```
+
+Compare regularized varying effects to unpooled estimates.
+
+```{r}
+# calculate unpooled estimates from the data
+a1 <- sapply(1:N_cafes, function(i) mean(wait[cafe_id == i & afternoon == 0]))
+b1 <- sapply(1:N_cafes, function(i) mean(wait[cafe_id == i & afternoon == 1])) - a1
+
+# extract posterior means from partially pooled estimates
+a2 <- apply(post13_1[,grep('^a_cafe', colnames(post13_1))], 2, mean)
+b2 <- apply(post13_1[,grep('^b_cafe', colnames(post13_1))], 2, mean)
+
+df <- data.frame(a1, b1, a2, b2)
+
+# plot both
+ggplot(df) + theme_tufte(base_family = 'sans') +
+  stat_ellipse(aes(x = a1, y = b1), level = .1, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .3, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .5, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .8, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .99, alpha = .2) +
+  geom_point(aes(x = a1, y = b1), color = 'dodgerblue') +
+  geom_point(aes(x = a2, y = b2), shape = 21) +
+  geom_segment(aes(x = a1, xend = a2, y = b1, yend = b2)) +
+  labs(x = 'intercept', y = 'slope')
+```
+
+
+
 
