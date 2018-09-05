@@ -60,11 +60,11 @@ b_cafe <- vary_effects[,2]
 
 ```{r}
 ggplot() + theme_tufte(base_family = 'sans') +
-  geom_point(aes(a_cafes, b_cafes), shape = 21, color = 'dodgerblue') +
-  stat_ellipse(aes(a_cafes, b_cafes), level = .50, alpha = .1) +
-  stat_ellipse(aes(a_cafes, b_cafes), level = .89, alpha = .1) +
-  stat_ellipse(aes(a_cafes, b_cafes), level = .97, alpha = .1) +
-  labs(x = 'intercepts (a_cafes)', y = 'slopes (b_cafes)')
+  geom_point(aes(a_cafe, b_cafe), shape = 21, color = 'dodgerblue') +
+  stat_ellipse(aes(a_cafe, b_cafe), level = .50, alpha = .1) +
+  stat_ellipse(aes(a_cafe, b_cafe), level = .89, alpha = .1) +
+  stat_ellipse(aes(a_cafe, b_cafe), level = .97, alpha = .1) +
+  labs(x = 'intercepts (a_cafe)', y = 'slopes (b_cafe)')
 ```
 
 ### 13.1.2 simulate observations
@@ -168,7 +168,7 @@ ggplot(post13_1) + theme_tufte(base_family = 'sans') +
   labs(x = 'correlation')
 ```
 
-Compare regularized varying effects to unpooled estimates.
+Compare slope and intercept for regularized varying effects to unpooled estimates.
 
 ```{r}
 # calculate unpooled estimates from the data
@@ -193,6 +193,473 @@ ggplot(df) + theme_tufte(base_family = 'sans') +
   geom_segment(aes(x = a1, xend = a2, y = b1, yend = b2)) +
   labs(x = 'intercept', y = 'slope')
 ```
+
+Compare wait times for regularized varying effects to unpooled estimates.
+
+```{r}
+df <- df %>% 
+  mutate(w_morning1 = a1,
+         w_afternoon1 = a1 + b1,
+         w_morning2 = a2, 
+         w_afternoon2 = a2 + b2)
+
+ggplot(df) + theme_tufte(base_family = 'sans') +
+  stat_ellipse(aes(x = w_morning1, y = w_afternoon1), level = .1, alpha = .2) +
+  stat_ellipse(aes(x = w_morning1, y = w_afternoon1), level = .3, alpha = .2) +
+  stat_ellipse(aes(x = w_morning1, y = w_afternoon1), level = .5, alpha = .2) +
+  stat_ellipse(aes(x = w_morning1, y = w_afternoon1), level = .8, alpha = .2) +
+  stat_ellipse(aes(x = w_morning1, y = w_afternoon1), level = .99, alpha = .2) +
+  geom_point(aes(x = w_morning1, y = w_afternoon1), color = 'dodgerblue') +
+  geom_point(aes(x = a2, y = w_afternoon2), shape = 21) +
+  geom_segment(aes(x = w_morning1, xend = w_morning2, y = w_afternoon1, yend = w_afternoon2)) +
+  geom_line(data = data.frame(x = seq(6)), aes(x = x, y = x), linetype = 'dashed') +
+  labs(x = 'morning wait (min)', y = 'afternoon wait (min)')
+```
+
+## 13.2 example: admissions decision and gender
+
+Load data.
+
+```{r}
+data('UCBadmit', package = 'rethinking')
+d <- UCBadmit; rm(UCBadmit)
+d <- d %>% mutate(male = applicant.gender == 'male',
+                  dept_id = as.integer(dept))
+```
+
+Code model in Stan.
+
+```{stan output.var="m13_2"}
+data {
+  int N;
+  int n[N];
+  int m[N];
+  int A[N];
+  int N_depts;
+  int dept[N];
+}
+parameters {
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+  vector[N_depts] a_dept;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a_dept | alpha, sigma);
+  target += normal_lpdf(alpha | 0, 10);
+  target += normal_lpdf(beta | 0, 1);
+  target += cauchy_lpdf(sigma | 0, 2);
+  for(i in 1:N) p[i] = a_dept[dept[i]] + beta * m[i];
+  target += binomial_logit_lpmf(A | n, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for (i in 1:N) {
+    p[i] = a_dept[dept[i]] + beta * m[i];
+    log_lik[i] = binomial_logit_lpmf(A[i] | n[i], p[i]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  n = d$applications,
+  m = d$male,
+  A = d$admit,
+  N_depts = max(d$dept_id),
+  dept = d$dept_id
+)
+
+fit13_2 <- sampling(m13_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit13_2, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+### 13.2.2 varying effects of being male
+
+Code model in Stan.
+
+```{stan output.var="m13_3"}
+data {
+  int N;
+  int n[N];
+  real m[N];
+  int A[N];
+  int N_depts;
+  int dept[N];
+}
+parameters {
+  real a;
+  real b;
+  vector[N_depts] a_dept;
+  vector[N_depts] b_dept;
+  vector<lower=0>[2] sigma_dept;
+  corr_matrix[2] rho;
+}
+transformed parameters {
+  vector[2] mu_ab;
+  cov_matrix[2] Sigma;
+  vector[2] v_a_deptb_dept[N_depts];
+  
+  for(j in 1:N_depts) v_a_deptb_dept[j, 1:2] = [a_dept[j], b_dept[j]]';
+  
+  mu_ab = [a, b]';
+  Sigma = quad_form_diag(rho, sigma_dept);
+}
+model {
+  vector[N] p;
+  
+  // priors
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(b | 0, 1);
+  target += cauchy_lpdf(sigma_dept | 0, 2);
+  target += lkj_corr_lpdf(rho | 2);
+  
+  for (i in 1:N) p[i] = a_dept[dept[i]] + b_dept[dept[i]] * m[i];
+
+  target += binomial_logit_lpmf(A | n, p);
+  target += multi_normal_lpdf(v_a_deptb_dept | mu_ab, Sigma);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(i in 1:N) {
+    p[i] = a_dept[dept[i]] + b_dept[dept[i]] * m[i];
+    log_lik[i] = binomial_logit_lpmf(A[i] | n[i], p[i]);
+  }
+  }
+}
+
+```
+
+Sample from model.
+
+```{r}
+fit13_3 <- sampling(m13_3, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit13_3, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
+```
+
+```{r}
+post13_3 <- as.data.frame(fit13_3)
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_density(aes(post13_3$`Sigma[1,2]`)) +
+  labs(x = 'correlation')
+
+```
+
+```{r}
+a1 <- d %>% filter(male == 0) %>% group_by(dept_id) %>% summarise(avg = admit/applications) %>% .$avg
+b1 <- d %>% filter(male == 1) %>% group_by(dept_id) %>% summarise(avg = admit/applications) %>% .$avg - a1
+
+a2 <- apply(post13_3[, grep('^a_dept', colnames(post13_3))], 2, mean) 
+b2 <- apply(post13_3[, grep('^b_dept', colnames(post13_3))], 2, mean) 
+a2 <- a2 %>% plogis
+df <- data.frame(a1, b1, a2, b2)
+
+ggplot(df) + theme_tufte(base_family = 'sans') +
+  stat_ellipse(aes(x = a1, y = b1), level = .1, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .3, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .5, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .7, alpha = .2) +
+  stat_ellipse(aes(x = a1, y = b1), level = .97, alpha = .2) +
+  geom_point(aes(a1, b1), color = 'dodgerblue') +
+  geom_point(aes(a2, b2), shape = 21) +
+  labs(x = 'intercept (a_dept)', y = 'slope (b_dept)')
+```
+
+### 13.2.4 Model comparisons
+
+Code model without gender.
+
+```{stan output.var="m13_4"}
+data {
+  int N;
+  int N_depts;
+  int A[N];
+  int n[N];
+  int dept[N];
+}
+parameters {
+  vector[N_depts] a_dept;
+  real a;
+  real<lower=0> sigma_dept;
+}
+model {
+  vector[N] p;
+  target += normal_lpdf(a_dept[dept] | a, sigma_dept);
+  target += normal_lpdf(a | 0, 10);
+  target += cauchy_lpdf(sigma_dept | 0, 2);
+  p = a_dept[dept];
+  target += binomial_logit_lpmf(A | n, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  for(i in 1:N) {
+    p = a_dept[dept];
+    log_lik[i] = binomial_logit_lpmf(A[i] | n[i], p[i]);
+  }
+  }
+}
+
+```
+
+Sample from model.
+
+```{r}
+fit13_4 <- sampling(m13_4, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Compare models.
+
+```{r}
+# extract log likelihoods
+library(loo)
+ll13_2 <- extract_log_lik(fit13_2)
+ll13_3 <- extract_log_lik(fit13_3)
+ll13_4 <- extract_log_lik(fit13_4)
+
+# calculate reff
+neff13_2 <- relative_eff(ll13_2, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+neff13_3 <- relative_eff(ll13_3, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+neff13_4 <- relative_eff(ll13_4, chain_id = c(rep(1, 500), rep(2, 500)), cores =2)
+
+# calculate waics
+waic13_2 <- waic(ll13_2, r_eff = reff13_2, cores = 2)
+waic13_3 <- waic(ll13_3, r_eff = reff13_3, cores = 2)
+waic13_4 <- waic(ll13_4, r_eff = reff13_4, cores = 2)
+
+# compare
+compare(waic13_2, waic13_3, waic13_4)
+```
+
+## 13.3 Example: cross-classified chimpanzees with varying slopes
+
+load the data.
+
+```{r}
+data('chimpanzees', package = 'rethinking')
+d <- chimpanzees; rm(chimpanzees)
+```
+
+Code the model in Stan.
+
+```{stan output.var="m13_6"}
+data {
+  int N;
+  int N_actors;
+  int N_blocks;
+  int L[N]; // pulled left
+  int C[N]; // condition
+  int P[N]; // prosocial left
+  int actor_id[N];
+  int block_id[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+  vector[N_actors] a_actor;
+  vector[N_actors] bp_actor;
+  vector[N_actors] bpc_actor;
+  
+  vector[N_blocks] a_block;
+  vector[N_blocks] bp_block;
+  vector[N_blocks] bpc_block;
+  
+  vector<lower=0>[3] sigma_block;
+  vector<lower=0>[3] sigma_actor;
+  corr_matrix[3] Rho_actor;
+  corr_matrix[3] Rho_block;
+}
+transformed parameters {
+  vector[3] v_block[N_blocks];
+  cov_matrix[3] SRS_block;
+  vector[3] v_actor[N_actors];
+  cov_matrix[3] SRS_actor;
+  
+  for(j in 1:N_blocks) v_block[j] = [a_block[j], bp_block[j], bpc_block[j]]';
+  SRS_block = quad_form_diag(Rho_block, sigma_block);
+  
+  for(j in 1:N_actors) v_actor[j] = [a_actor[j], bp_actor[j], bpc_actor[j]]';
+  SRS_actor = quad_form_diag(Rho_actor, sigma_actor);
+}
+model {
+  vector[N] p;
+  vector[N] A;
+  vector[N] Bp;
+  vector[N] Bpc;
+  
+  target += multi_normal_lpdf(v_block | rep_vector(0, 3), SRS_block);
+  target += multi_normal_lpdf(v_actor | rep_vector(0, 3), SRS_actor);
+  
+  // linear models
+  A = a + a_actor[actor_id] + a_block[block_id];
+  Bp = bp + bp_actor[actor_id] + bp_block[block_id];
+  Bpc = bpc + bpc_actor[actor_id] + bpc_block[block_id];
+  for (i in 1:N) p[i] = A[i] + (Bp[i] + Bpc[i] * C[i]) * P[i];
+  
+  // likelihood
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  vector[N] A;
+  vector[N] Bp;
+  vector[N] Bpc;
+  
+  A = a + a_actor[actor_id] + a_block[block_id];
+  Bp = bp + bp_actor[actor_id] + bp_block[block_id];
+  Bpc = bpc + bpc_actor[actor_id] + bpc_block[block_id];
+  for (i in 1:N) {
+    p[i] = A[i] + (Bp[i] + Bpc[i] * C[i]) * P[i];
+    log_lik[i] = binomial_logit_lpmf(L[i] | 1, p[i]);
+  }
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  N_actors = max(d$actor),
+  N_blocks = max(d$block_id),
+  L = d$pulled_left,
+  C = d$condition,
+  P = d$prosoc_left,
+  actor_id = d$actor,
+  block_id = d$block_id
+)
+
+fit13_6 <- sampling(m13_6, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r, message = TRUE}
+check_hmc_diagnostics(fit13_6)
+```
+
+Code model using non-centered parameterization.
+
+```{stan output.var="m13_6NC"}
+data {
+  int N;
+  int N_actors;
+  int N_blocks;
+  int L[N];
+  int C[N];
+  int P[N];
+  int actor_id[N];
+  int block_id[N];
+}
+parameters {
+  real a;
+  real bp;
+  real bpc;
+  vector[N_actors] za_actor;
+  vector[N_actors] zbp_actor;
+  vector[N_actors] zbpc_actor;
+  
+  vector[N_blocks] za_block;
+  vector[N_blocks] zbp_block;
+  vector[N_blocks] zbpc_block;
+  
+  vector<lower=0>[3] sigma_block;
+  vector<lower=0>[3] sigma_actor;
+  corr_matrix[3] Rho_actor;
+  corr_matrix[3] Rho_block;
+}
+transformed parameters {
+  vector[3] v_block[N_blocks];
+  vector[3] v_actor[N_actors];
+
+  for(j in 1:N_blocks) v_block[j] = [za_block[j], zbp_block[j], zbpc_block[j]]';
+  for(j in 1:N_actors) v_actor[j] = [za_actor[j], zbp_actor[j], zbpc_actor[j]]';
+}
+model {
+  vector[N] p;
+  vector[N] A;
+  vector[N] Bp;
+  vector[N] Bpc;
+  
+  // priors
+  target += lkj_corr_lpdf(Rho_block | 4);
+  target += lkj_corr_lpdf(Rho_actor | 4);
+  target += cauchy_lpdf(sigma_block | 0, 2);
+  target += cauchy_lpdf(sigma_actor | 0, 2);
+  target += normal_lpdf(a | 0, 1);
+  target += normal_lpdf(bp | 0, 1);
+  target += normal_lpdf(bpc | 0, 1);
+  
+  target += multi_normal_lpdf(v_block | rep_vector(0, 3), Rho_block);
+  target += multi_normal_lpdf(v_actor | rep_vector(0, 3), Rho_actor);
+  
+  // linear models
+  A = a + za_actor[actor_id] * sigma_actor[1] + za_block[block_id] * sigma_block[1];
+  Bp = bp + zbp_actor[actor_id] * sigma_actor[2] + zbp_block[block_id] * sigma_block[2];
+  Bpc = bpc + zbpc_actor[actor_id] * sigma_actor[3] + zbpc_block[block_id] * sigma_block[3];
+  for (i in 1:N) p[i] = A[i] + (Bp[i] + Bpc[i] * C[i]) * P[i];
+  
+  // likelihood
+  target += binomial_logit_lpmf(L | 1, p);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] p;
+  vector[N] A;
+  vector[N] Bp;
+  vector[N] Bpc;
+  
+  A = a + za_actor[actor_id] * sigma_actor[1] + za_block[block_id] * sigma_block[1];
+  Bp = bp + zbp_actor[actor_id] * sigma_actor[2] + zbp_block[block_id] * sigma_block[2];
+  Bpc = bpc + zbpc_actor[actor_id] * sigma_actor[3] + zbpc_block[block_id] * sigma_block[3];
+  for (i in 1:N) {
+    p[i] = A[i] + (Bp[i] + Bpc[i] * C[i]) * P[i];
+    log_lik[i] = binomial_logit_lpmf(L[i] | 1, p[i]);
+  }
+  }
+}
+
+```
+
+```{r}
+fit13_6NC <- sampling(m13_6NC, data = dat, iter = 5000, warmup = 1000, chains = 3, 
+                      cores = 3, control = list(adapt_delta = 0.95) )
+```
+
+
+```{r, message = TRUE}
+check_hmc_diagnostics(fit13_6NC)
+```
+
+
+```{r}
+print(fit13_6NC, include = T, pars = c('sigma_actor', 'sigma_block'))
+```
+
+## 13.4 Continuous categories and the gaussian process
+
+
 
 
 
