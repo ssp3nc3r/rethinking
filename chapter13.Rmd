@@ -698,7 +698,7 @@ transformed parameters{
     vector[N_blocks] bpc_block;
     matrix[3,3] Rho_block;
     
-    v_actor = (diag_pre_multiply(sigma_actor,L_Rho_actor) * z_actor)';
+    v_actor = (diag_pre_multiply(sigma_actor,L_Rho_actor) * z_actor)';  // TODO: LEARN ABOUT diag_pre_multiply
     a_actor   = v_actor[,1];
     bp_actor  = v_actor[,2];
     bpc_actor = v_actor[,3];
@@ -724,7 +724,7 @@ model{
     target += normal_lpdf(a | 0 , 1 );
     target += normal_lpdf(bp |0 , 1 );
     target += normal_lpdf(bpc | 0 , 1 );
-    target += normal_lpdf(to_vector(z_block) | 0 , 1 );
+    target += normal_lpdf(to_vector(z_block) | 0 , 1 );  // TODO: LEARN ABOUT to_vector
     target += normal_lpdf(to_vector(z_actor) | 0 , 1 );
     
     // linear models
@@ -770,6 +770,184 @@ print(fit13_6NC, include = T, pars = c('sigma_actor', 'sigma_block'))
 ```
 
 ## 13.4 Continuous categories and the gaussian process
+
+### 13.4.1 example: spatial autocorrelation in Oceanic tools
+
+Load the data.
+
+```{r}
+# Oceanic data now with coordinates
+data('Kline2', package = 'rethinking')
+d <- Kline2; rm(Kline2)
+d$society <- 1:10
+
+# Distance matrix
+data('islandsDistMatrix', package = 'rethinking')
+Dmat <- islandsDistMatrix; rm(islandsDistMatrix)
+colnames(Dmat) <- c("Ml","Ti","SC","Ya","Fi","Tr","Ch","Mn","To","Ha")
+```
+
+Review shapes of covariance using linear and squared representations.
+
+```{r}
+ex <- data.frame(dist = seq(0, 5, by = .01)) %>% 
+     mutate(shape_linear = exp(-1 * dist), shape_squared = exp(-1 * dist^2))
+
+ggplot(ex) + theme_tufte(base_family = 'sans') +
+  geom_line(aes(dist, shape_linear), linetype = 'dashed') +
+  geom_line(aes(dist, shape_squared)) + labs(x = 'Distance', y = 'Covariance shape')
+```
+
+Code model in Stan.
+
+```{stan output.var="m13_7"}
+data {
+  int N;            // observations
+  int T[N];         // tools
+  vector[N] logpop; // log population
+  
+  int N_societies;  // number of societies
+  int society[N];   // index of societies
+  matrix[N_societies,N_societies] Dmat; // distance matrix
+}
+parameters {
+  real alpha;
+  real beta_lpop;
+  vector[N_societies] gamma;
+  real<lower=0> etasq;
+  real<lower=0> rhosq;
+}
+model {
+  vector[N] lambda;
+  matrix[N_societies,N_societies] K;
+  
+  // create Sigma (K) matrix
+  for ( i in 1:(N_societies - 1) )
+    for ( j in (i+1):N_societies ) {
+      K[i,j] = etasq * exp( -rhosq * pow(Dmat[i,j],2) );
+      K[j,i] = K[i,j];
+      }
+  for ( k in 1:N_societies )
+    K[k,k] = etasq + 0.01;
+        
+  // priors
+  target += multi_normal_lpdf(gamma | rep_vector(0,N_societies) , K );
+  target += normal_lpdf(alpha | 0, 10);
+  target += normal_lpdf(beta_lpop | 0, 1);
+  target += cauchy_lpdf(etasq | 0, 1);
+  target += cauchy_lpdf(rhosq | 0, 1);
+  
+  // linear model
+  lambda = alpha + gamma[society] + beta_lpop * logpop;
+  
+  // likelihood
+  target += poisson_log_lpmf(T | lambda);
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  T = d$total_tools,
+  logpop = d$logpop,
+  N_societies = max(d$society),
+  society = d$society,
+  Dmat = Dmat
+)
+
+fit13_7 <- sampling(m13_7, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summary of model.
+
+```{r}
+print(fit13_7, probs = c(0.1, 0.5, 0.9))
+```
+
+Posterior distribution of the spatial covariance.
+
+```{r}
+post13_7 <- as.data.frame(fit13_7, pars = c('etasq', 'rhosq'))
+
+dist     <- seq(0, 10, by = .1) 
+
+cov_dist <- diag(post13_7$etasq) %*% exp(-post13_7$rhosq %*% t(dist^2) )
+colnames(cov_dist) <- dist
+
+cov_dist <- 
+  as.data.frame(cov_dist) %>%
+  mutate(Iter = row_number()) %>%
+  tidyr::gather(key = 'dist', value = 'covariance', -Iter) %>%
+  mutate(dist = as.numeric(as.character(dist)))
+
+cov_dist_med <- 
+  cov_dist %>% group_by(dist) %>% 
+  summarise(covariance = median(covariance))
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(data = group_by(cov_dist, dist) %>% filter(row_number() <= 100), 
+            aes(x = dist, y = covariance, group = Iter), alpha = .1) + 
+  geom_line(data = cov_dist_med, aes(x = dist, y = covariance), lwd = 1) + 
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = 'distance (thousand km)', y = 'covariance') 
+```
+
+Review correlation among the 10 societies.
+
+```{r}
+K <- median(post13_7$etasq) * exp(-median(post13_7$rhosq) * Dmat^2)
+diag(K) <-  median(post13_7$etasq) + 0.01
+Rho <- cov2cor(K)
+round(Rho, 2) 
+```
+
+Map of societies.
+
+```{r}
+colnames(Rho) <- rownames(Rho)
+Rho[upper.tri(Rho, diag = T)] <- NA
+Rho <- reshape2::melt(Rho, na.rm = TRUE)
+colnames(Rho) <- c('culture', 'adjacent', 'correlation')
+Rho <- Rho %>% left_join(d[,c('culture', 'lon2', 'lat', 'logpop', 'total_tools')], by = c('culture' = 'culture'))
+Rho <- Rho %>% left_join(d[,c('culture', 'lon2', 'lat', 'logpop', 'total_tools')], by = c('adjacent' = 'culture'), suffix = c('', '.adj'))
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_segment(data = Rho, aes(x = lon2, xend = lon2.adj, y = lat, yend = lat.adj, alpha = correlation)) +
+  geom_point(data = d, aes(lon2, lat, size = logpop), color = 'skyblue') + 
+  geom_text(data = d, aes(lon2+1.8, lat, label = culture), hjust = 0, size = 3) +
+  scale_x_continuous(limits = c(-50, 30)) +
+  scale_alpha(range = c(0, 1)) +
+  theme(legend.position = '') +
+  labs(x = 'longitude', y = 'latitude')
+```
+
+Plot tools versus log population.
+
+```{r}
+post <- as.data.frame(fit13_7, pars = c('alpha', 'beta_lpop'))
+tot_tools_mu <- post$alpha + post$beta_lpop %*% t(seq(6, 13))
+tt_mean <- apply(tot_tools_mu, 2, mean) %>% exp()
+tt_pi <- apply(tot_tools_mu, 2, rethinking::PI) %>% exp()
+
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_line(aes(x = seq(6, 13), y = tt_pi[2,]), linetype = 'dashed', alpha = .3) +
+  geom_line(aes(x = seq(6, 13), y = tt_mean), linetype = 'dashed', alpha = .3) +
+  geom_line(aes(x = seq(6, 13), y = tt_pi[1,]), linetype = 'dashed', alpha = .3) +
+  geom_segment(data = Rho, aes(x = logpop, xend = logpop.adj, y = total_tools, yend = total_tools.adj, alpha = correlation)) +
+  geom_point(data = d, aes(logpop, total_tools, size = logpop), color = 'skyblue') + 
+  geom_text(data = d, aes(logpop + .1, total_tools, label = culture), hjust = 0, size = 3) +
+  scale_x_continuous(limits = c(7, 13), breaks = seq(7, 13)) +
+  coord_cartesian(ylim = c(9, 80)) +
+  scale_alpha(range = c(0, 1)) +
+  theme(legend.position = '') +
+  labs(x = 'log population', y = 'total tools')
+
+```
+
 
 
 
