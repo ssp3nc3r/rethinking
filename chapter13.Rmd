@@ -560,7 +560,7 @@ check_hmc_diagnostics(fit13_6)
 
 Code model using non-centered parameterization.
 
-```{stan output.var="m13_6NC"}
+```{stan output.var="m13_6NC1"}
 data {
   int N;
   int N_actors;
@@ -643,21 +643,135 @@ generated quantities {
 ```
 
 ```{r}
-fit13_6NC <- sampling(m13_6NC, data = dat, iter = 5000, warmup = 1000, chains = 3, 
-                      cores = 3, control = list(adapt_delta = 0.95) )
+fit13_6NC1 <- sampling(m13_6NC1, data = dat, iter = 1000, chains = 2, cores = 2 )
 ```
 
 
 ```{r, message = TRUE}
-check_hmc_diagnostics(fit13_6NC)
+check_hmc_diagnostics(fit13_6NC1)
 ```
 
+
+```{r}
+print(fit13_6NC1, include = T, pars = c('sigma_actor', 'sigma_block'))
+```
+
+Cholesky decomposition version.
+
+```{stan output.var="m13_6NC"}
+data{
+    int<lower=1> N;
+
+    int L[N];
+    int C[N];
+    int P[N];
+    
+    int<lower=1> N_actors;
+    int actor_id[N];
+    int<lower=1> N_blocks;
+    int block_id[N];
+}
+parameters{
+    real a;
+    real bp;
+    real bpc;
+    
+    vector<lower=0>[3] sigma_actor;
+    vector<lower=0>[3] sigma_block;
+
+    matrix[3,N_actors] z_actor;
+    cholesky_factor_corr[3] L_Rho_actor;
+
+    matrix[3,N_blocks] z_block;
+    cholesky_factor_corr[3] L_Rho_block;
+}
+transformed parameters{
+    matrix[N_actors,3] v_actor;
+    vector[N_actors] a_actor;
+    vector[N_actors] bp_actor;
+    vector[N_actors] bpc_actor;
+    matrix[3,3] Rho_actor;
+
+    matrix[N_blocks,3] v_block;
+    vector[N_blocks] a_block;
+    vector[N_blocks] bp_block;
+    vector[N_blocks] bpc_block;
+    matrix[3,3] Rho_block;
+    
+    v_actor = (diag_pre_multiply(sigma_actor,L_Rho_actor) * z_actor)';
+    a_actor   = v_actor[,1];
+    bp_actor  = v_actor[,2];
+    bpc_actor = v_actor[,3];
+    Rho_actor = L_Rho_actor * L_Rho_actor';
+
+    v_block = (diag_pre_multiply(sigma_block,L_Rho_block) * z_block)';
+    a_block   = v_block[, 1];
+    bp_block  = v_block[, 2];
+    bpc_block = v_block[, 3];
+    Rho_block = L_Rho_block * L_Rho_block';
+}
+model{
+    vector[N] A;
+    vector[N] BP;
+    vector[N] BPC;
+    vector[N] p;
+
+    // priors
+    target += lkj_corr_cholesky_lpdf(L_Rho_actor | 4 );
+    target += lkj_corr_cholesky_lpdf(L_Rho_block | 4 );
+    target += cauchy_lpdf(sigma_actor | 0 , 2 );
+    target += cauchy_lpdf(sigma_block | 0 , 2 );
+    target += normal_lpdf(a | 0 , 1 );
+    target += normal_lpdf(bp |0 , 1 );
+    target += normal_lpdf(bpc | 0 , 1 );
+    target += normal_lpdf(to_vector(z_block) | 0 , 1 );
+    target += normal_lpdf(to_vector(z_actor) | 0 , 1 );
+    
+    // linear models
+    for ( i in 1:N ) {
+      A[i] = a + a_actor[actor_id[i]] + a_block[block_id[i]];
+      BP[i] = bp + bp_actor[actor_id[i]] + bp_block[block_id[i]];
+      BPC[i] = bpc + bpc_actor[actor_id[i]] + bpc_block[block_id[i]];
+      p[i] = A[i] + (BP[i] + BPC[i] * C[i]) * P[i];    
+    }
+    
+    // likelihood
+    target += binomial_logit_lpmf(L | 1 , p );
+
+}
+
+generated quantities{
+    vector[N] log_lik;
+  {
+    vector[N] A;
+    vector[N] BP;
+    vector[N] BPC;
+    vector[N] p;
+    for ( i in 1:N ) {
+        A[i] = a + a_actor[actor_id[i]] + a_block[block_id[i]];
+        BP[i] = bp + bp_actor[actor_id[i]] + bp_block[block_id[i]];
+        BPC[i] = bpc + bpc_actor[actor_id[i]] + bpc_block[block_id[i]];
+        p[i] = A[i] + (BP[i] + BPC[i] * C[i]) * P[i];
+        log_lik[i] = binomial_logit_lpmf(L[i] | 1, p[i] );
+    }
+  }
+}
+
+```
+
+Sample from model.
+
+```{r}
+fit13_6NC <- sampling(m13_6NC, data = dat, iter = 1000, chains = 2, cores = 2 )
+```
 
 ```{r}
 print(fit13_6NC, include = T, pars = c('sigma_actor', 'sigma_block'))
 ```
 
 ## 13.4 Continuous categories and the gaussian process
+
+
 
 
 
