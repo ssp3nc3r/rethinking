@@ -937,7 +937,9 @@ ggplot() + theme_tufte(base_family = 'sans') +
   geom_line(aes(x = seq(6, 13), y = tt_pi[2,]), linetype = 'dashed', alpha = .3) +
   geom_line(aes(x = seq(6, 13), y = tt_mean), linetype = 'dashed', alpha = .3) +
   geom_line(aes(x = seq(6, 13), y = tt_pi[1,]), linetype = 'dashed', alpha = .3) +
-  geom_segment(data = Rho, aes(x = logpop, xend = logpop.adj, y = total_tools, yend = total_tools.adj, alpha = correlation)) +
+  geom_segment(data = Rho, aes(x = logpop, xend = logpop.adj, 
+                               y = total_tools, yend = total_tools.adj, 
+                               alpha = correlation)) +
   geom_point(data = d, aes(logpop, total_tools, size = logpop), color = 'skyblue') + 
   geom_text(data = d, aes(logpop + .1, total_tools, label = culture), hjust = 0, size = 3) +
   scale_x_continuous(limits = c(7, 13), breaks = seq(7, 13)) +

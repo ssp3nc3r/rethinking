@@ -1,0 +1,204 @@
+---
+title: "Chapter 14"
+author: "Scott Spencer"
+date: "9/6/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+```
+
+## 14.1 Measurement error
+
+load the data.
+
+```{r}
+data('WaffleDivorce', package = 'rethinking')
+d <- WaffleDivorce; rm(WaffleDivorce)
+```
+
+Figure 14.1
+
+
+```{r}
+p1 <- ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = MedianAgeMarriage, xend = MedianAgeMarriage, 
+                   y = Divorce + Divorce.SE, yend = Divorce - Divorce.SE)) +
+  geom_point(aes(MedianAgeMarriage, Divorce), shape = 21, fill = 'white') + 
+  theme(plot.margin=unit(c(0,1,0,1),"cm")) +
+  labs(x = 'Median age marriage', y = 'Divorce rate')
+
+p2 <- ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = log(Population), xend = log(Population), 
+                   y = Divorce + Divorce.SE, yend = Divorce - Divorce.SE)) +
+  geom_point(aes(log(Population), Divorce), shape = 21, fill = 'white') + 
+  theme(plot.margin=unit(c(0,0,0,1),"cm")) +
+  labs(x = 'Log population', y = 'Divorce rate')
+
+library(gridExtra)
+grid.arrange(p1, p2, nrow = 1)
+```
+
+
+### 14.1.1 Error on the outcome
+
+Code model in Stan.
+
+```{stan output.var="m14_1"}
+data {
+  int N;
+  vector[N] A;
+  vector[N] R;
+  vector[N] Dobs;
+  vector[N] Dsd;
+}
+parameters {
+  real a;
+  real ba;
+  real br;
+  real<lower=0> sigma;
+  vector[N] Dest;
+}
+model {
+  vector[N] mu; 
+  // priors
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(ba | 0, 10);
+  target += normal_lpdf(br | 0, 10);
+  target += cauchy_lpdf(sigma | 0, 2.5);
+  
+  // linear model
+  mu = a + ba * A + br * R;
+  
+  // likelihood
+  target += normal_lpdf(Dest | mu, sigma);
+  
+  // prior for estimates
+  target += normal_lpdf(Dobs | Dest, Dsd);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  mu = a + ba * A + br * R;
+  for(i in 1:N) log_lik[i] = normal_lpdf(Dest[i] | mu[i], sigma);
+  }
+}
+
+```
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  A = d$MedianAgeMarriage,
+  R = d$Marriage,
+  Dobs = d$Divorce,
+  Dsd = d$Divorce.SE
+)
+
+fit14_1 <- sampling(m14_1, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Figure 14.2 
+
+Show effects of shrinkage from the model.
+
+```{r}
+Dest14_1 <- as.matrix(fit14_1, pars = 'Dest')
+d <- d %>% mutate(Dest_mean = apply(Dest14_1, 2, mean),
+                  Dest_sd = apply(Dest14_1, 2, sd))
+
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_point(aes(x = Divorce.SE, y = Dest_mean - Divorce)) +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  labs(x = 'Divorce observed standard error', 
+       y = 'Divorce estimated - divorce observed')
+```
+
+```{r}
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = MedianAgeMarriage, xend = MedianAgeMarriage, 
+                   y = Dest_mean - Dest_sd, yend = Dest_mean + Dest_sd)) +
+  geom_point(aes(x = MedianAgeMarriage, y = Dest_mean), shape = 21, fill = 'white') +
+  geom_smooth(aes(x = MedianAgeMarriage, y = Divorce), method='lm',formula=y~x, alpha = .1, linetype = 'dashed', color = 'black', lwd = .5) +
+  geom_smooth(aes(x = MedianAgeMarriage, y = Dest_mean), method='lm',formula=y~x, alpha = .2, lwd = .5)
+# TODO: THIS DOESN'T MATCH BOOK
+```
+
+### 14.1.2 Error on both outcome and predictor
+
+
+Code model in Stan.
+
+```{stan output.var="m14_2"}
+data {
+  int N;
+  vector[N] A;
+  vector[N] Dobs;
+  vector[N] Dsd;
+  vector[N] Robs;
+  vector[N] Rsd;
+}
+parameters {
+  real a;
+  real ba;
+  real br;
+  real<lower=0> sigma;
+  vector[N] Dest;
+  vector[N] Rest;
+}
+model {
+  vector[N] mu; 
+  // priors
+  target += normal_lpdf(a | 0, 10);
+  target += normal_lpdf(ba | 0, 10);
+  target += normal_lpdf(br | 0, 10);
+  target += cauchy_lpdf(sigma | 0, 2.5);
+  
+  // linear model
+  mu = a + ba * A + br * Rest;
+  
+  // likelihood
+  target += normal_lpdf(Dest | mu, sigma);
+  
+  // prior for estimates
+  target += normal_lpdf(Dobs | Dest, Dsd);
+  target += normal_lpdf(Robs | Rest, Rsd);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  mu = a + ba * A + br * Rest;
+  for(i in 1:N) log_lik[i] = normal_lpdf(Dest[i] | mu[i], sigma);
+  }
+}
+
+```
+
+
+Organize data and sample from model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  A = d$MedianAgeMarriage,
+  Robs = d$Marriage,
+  Rsd = d$Marriage.SE,
+  Dobs = d$Divorce,
+  Dsd = d$Divorce.SE
+)
+
+fit14_2 <- sampling(m14_2, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+```{r}
+print(fit14_2)
+```
+
+
