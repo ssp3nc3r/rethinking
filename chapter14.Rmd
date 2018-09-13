@@ -372,14 +372,19 @@ imputed14_3 <-
             nc_pi_l = rethinking::PI(value)[1],
             nc_pi_h = rethinking::PI(value)[2]) %>%
   ungroup() %>%
+  mutate(obs = as.integer(gsub('[^0-9]', '', key))) %>% 
+  arrange(obs) %>%
   mutate(kcal.per.g = d[!complete.cases(d),]$kcal.per.g,
          logMass = d[!complete.cases(d),]$logMass)
+
+# d$obsest <- d$neocortex.prop
+# d[!complete.cases(d),]$obsest <- imputed14_3$nc_imp_mean
 
 # TODO: regression line doesn't match book
 
 ggplot() + theme_tufte(base_family = 'sans') +
-  # stat_smooth(data = d, 
-  #             aes(x = neocortex.prop, y = kcal.per.g),
+  # stat_smooth(data = d,
+  #             aes(x = obsest, y = kcal.per.g),
   #             method = lm, alpha = .2) +
   geom_segment(data = imputed14_3,
                aes(x = nc_pi_l, xend = nc_pi_h,
@@ -492,6 +497,8 @@ imputed14_5 <-
             nc_pi_l = rethinking::PI(value)[1],
             nc_pi_h = rethinking::PI(value)[2]) %>%
   ungroup() %>%
+  mutate(obs = as.integer(gsub('[^0-9]', '', key))) %>% 
+  arrange(obs) %>%
   mutate(kcal.per.g = d[!complete.cases(d),]$kcal.per.g,
          logMass = d[!complete.cases(d),]$logMass)
 
