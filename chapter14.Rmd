@@ -181,7 +181,6 @@ generated quantities {
 
 ```
 
-
 Organize data and sample from model.
 
 ```{r}
@@ -201,4 +200,327 @@ fit14_2 <- sampling(m14_2, data = dat, iter = 1000, chains = 2, cores = 2)
 print(fit14_2)
 ```
 
+Figure 14.3a
+
+```{r}
+Rest14_2 <- as.matrix(fit14_2, pars = 'Rest')
+d <- d %>% mutate(Rest_mean = apply(Rest14_2, 2, mean),
+                  Rest_sd = apply(Rest14_2, 2, sd))
+
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_point(aes(x = Marriage.SE, y = Rest_mean - Marriage)) +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  labs(x = 'Marriage observed standard error', 
+       y = 'Marriage estimated - Marriage observed')
+```
+
+
+```{r}
+ggplot(d) + theme_tufte(base_family = 'sans') +
+  geom_segment(aes(x = Marriage, xend = Rest_mean,
+                   y = Divorce, yend = Dest_mean)) +
+  geom_point(aes(x = Marriage, y = Divorce), color = 'dodgerblue') +
+  geom_point(aes(x = Rest_mean, y = Dest_mean), shape = 21, fill = 'white') +
+  labs(x = 'Marriage rate (posterior)', y = 'Divorce rate (posterior)')
+
+```
+
+## 14.2 Missing data
+
+### 14.2.1 Imputing neocortex
+
+Load the data.
+
+```{r}
+data('milk', package = 'rethinking')
+d <- milk; rm(milk)
+d <- d %>% 
+  mutate(neocortex.prop = neocortex.perc / 100,
+         logMass = log(mass),
+         miss_idx = is.na(neocortex.perc) * cumsum(is.na(neocortex.perc)) )
+```
+
+Code the MCAR model in Stan.
+
+```{stan output.var="m14_3"}
+data {
+  int N;
+  vector[N] NCobs;
+  int N_miss;
+  int<lower=0,upper=N_miss> miss_idx[N];
+  vector[N] logMass;
+  vector[N] k;
+}
+parameters {
+  real a;
+  real bn;
+  real bm;
+  real<lower=0> sigma;
+  real mu_nc;
+  real<lower=0> sigma_nc;
+  vector[N_miss] nc_impute;
+}
+model {
+  vector[N] mu;
+  vector[N] NC;
+  int j = 1;
+  
+  // priors
+  target += normal_lpdf(a  | 0, 100);
+  target += normal_lpdf(bn | 0, 10);
+  target += normal_lpdf(bm | 0, 10);
+  target += cauchy_lpdf(sigma | 0, 1);
+  target += normal_lpdf(mu_nc | 0.5, 1);
+  target += cauchy_lpdf(sigma_nc | 0, 1);
+  
+  // combine observed and estimates for missing
+  NC = NCobs;
+  for(i in 1:N) if(miss_idx[i] > 0) NC[i] = nc_impute[miss_idx[i]];
+
+  // impute missing
+  target += normal_lpdf(NC | mu_nc, sigma_nc);
+  
+  // linear model
+  mu = a + bn * NC + bm * logMass;
+  
+  // likelihood
+  target += normal_lpdf(k | mu, sigma);
+}
+```
+
+Organize data and sample from the model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  NCobs = ifelse(is.na(d$neocortex.prop), -1, d$neocortex.prop),
+  N_miss = sum(is.na(d$neocortex.perc)),
+  miss_idx = d$miss_idx,
+  logMass = d$logMass,
+  k = d$kcal.per.g
+)
+
+fit14_3 <- sampling(m14_3, data = dat, iter = 10000, chains = 2, cores = 2)
+
+```
+
+Summarise model.
+
+```{r}
+print(fit14_3, probs = c(.1, .5, .9))
+```
+
+Compare above model to one using only complete cases.
+
+```{stan output.var="m14_4"}
+data {
+  int N;
+  vector[N] NC;
+  vector[N] logMass;
+  vector[N] k;
+}
+parameters {
+  real a;
+  real bn;
+  real bm;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu;
+
+  // priors
+  target += normal_lpdf(a  | 0, 100);
+  target += normal_lpdf(bn | 0, 10);
+  target += normal_lpdf(bm | 0, 10);
+  target += cauchy_lpdf(sigma | 0, 1);
+
+  // linear model
+  mu = a + bn * NC + bm * logMass;
+  
+  // likelihood
+  target += normal_lpdf(k | mu, sigma);
+}
+```
+
+```{r}
+dcc <- filter(d, complete.cases(d))
+
+dat <- list(
+  N = NROW(dcc),
+  NC = dcc$neocortex.prop,
+  logMass = dcc$logMass,
+  k = dcc$kcal.per.g
+)
+
+fit14_4 <- sampling(m14_4, data = dat, iter = 10000, chains = 2, cores = 2)
+
+```
+
+```{r}
+print(fit14_4, probs = c(.1, .5, .9))
+```
+
+Figure 14.4
+
+```{r}
+
+imputed14_3 <- 
+  as.data.frame(fit14_3, pars = c('nc_impute')) %>%
+  gather %>% 
+  group_by(key) %>%
+  summarise(nc_imp_mean = mean(value),
+            nc_pi_l = rethinking::PI(value)[1],
+            nc_pi_h = rethinking::PI(value)[2]) %>%
+  ungroup() %>%
+  mutate(kcal.per.g = d[!complete.cases(d),]$kcal.per.g,
+         logMass = d[!complete.cases(d),]$logMass)
+
+# TODO: regression line doesn't match book
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  # stat_smooth(data = d, 
+  #             aes(x = neocortex.prop, y = kcal.per.g),
+  #             method = lm, alpha = .2) +
+  geom_segment(data = imputed14_3,
+               aes(x = nc_pi_l, xend = nc_pi_h,
+                   y = kcal.per.g, yend = kcal.per.g)) +
+  geom_point(data = imputed14_3,
+             aes(x = nc_imp_mean, y = kcal.per.g), shape = 21, fill = 'white') +
+  geom_point(data = d,
+             aes(x = neocortex.prop,
+                 y = kcal.per.g), color = 'dodgerblue') +
+  labs(x = 'neocortex proportion', y = 'kcal per gram')
+```
+
+
+```{r}
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_point(data = d,
+             aes(x = logMass, y = neocortex.prop), color = 'dodgerblue') +
+  geom_segment(data = imputed14_3,
+               aes(x = logMass, xend = logMass, 
+                   y = nc_pi_l, yend = nc_pi_h)) +
+  geom_point(data = imputed14_3,
+             aes(x = logMass, y = nc_imp_mean), shape = 21, fill = 'white') +
+  scale_x_continuous(breaks = seq(-2, 4))
+```
+
+### 14.2.2 Improving the imputation model
+
+Code improved model in Stan.
+
+```{stan output.var="m14_5"}
+data {
+  int N;
+  vector[N] nc_obs;
+  int N_missing;
+  int<lower=0, upper=N_missing> missing[N];
+  vector[N] k;
+  vector[N] logmass;
+}
+parameters {
+  vector[N_missing] nc_imp;
+  real a;
+  real bn;
+  real bm;
+  real gm;
+  real a_nc;
+  real<lower=0> sigma_nc;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu;
+  vector[N] mu_nc;
+  vector[N] nc;
+  
+  // priors
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bn | 0, 10);
+  target += normal_lpdf(bm | 0, 10);
+  target += normal_lpdf(gm| 0, 10);
+  target += normal_lpdf(a_nc | 0.5 , 1);
+  target += cauchy_lpdf(sigma_nc | 0, 1);
+  target += cauchy_lpdf(sigma | 0, 1);
+
+  // imputation
+  nc = nc_obs;
+  for(i in 1:N) if (missing[i] > 0) nc[i] = nc_imp[missing[i]];
+  
+  mu_nc = a_nc + gm * logmass;
+  target += normal_lpdf(nc | mu_nc, sigma_nc);
+  
+  // linear model
+  mu = a + bn * nc + bm * logmass;
+
+  // likelihood
+  target += normal_lpdf(k | mu, sigma);
+  
+}
+```
+
+Organize data and sample from the model.
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  nc_obs = ifelse(is.na(d$neocortex.prop), -1, d$neocortex.prop),
+  N_missing = sum(is.na(d$neocortex.perc)),
+  missing = d$miss_idx,
+  logmass = d$logMass,
+  k = d$kcal.per.g
+)
+
+fit14_5 <- sampling(m14_5, data = dat, iter = 10000, chains = 2, cores = 2)
+
+```
+
+Summarise model.
+
+```{r}
+print(fit14_5, probs = c(.1, .5, .9))
+```
+
+Figure 14.5
+
+```{r}
+
+imputed14_5 <- 
+  as.data.frame(fit14_5, pars = c('nc_imp')) %>%
+  gather %>% 
+  group_by(key) %>%
+  summarise(nc_imp_mean = mean(value),
+            nc_pi_l = rethinking::PI(value)[1],
+            nc_pi_h = rethinking::PI(value)[2]) %>%
+  ungroup() %>%
+  mutate(kcal.per.g = d[!complete.cases(d),]$kcal.per.g,
+         logMass = d[!complete.cases(d),]$logMass)
+
+# TODO: regression line doesn't match book
+
+ggplot() + theme_tufte(base_family = 'sans') +
+  # stat_smooth(data = d, 
+  #             aes(x = neocortex.prop, y = kcal.per.g),
+  #             method = lm, alpha = .2) +
+  geom_segment(data = imputed14_5,
+               aes(x = nc_pi_l, xend = nc_pi_h,
+                   y = kcal.per.g, yend = kcal.per.g)) +
+  geom_point(data = imputed14_5,
+             aes(x = nc_imp_mean, y = kcal.per.g), shape = 21, fill = 'white') +
+  geom_point(data = d,
+             aes(x = neocortex.prop,
+                 y = kcal.per.g), color = 'dodgerblue') +
+  labs(x = 'neocortex proportion', y = 'kcal per gram')
+```
+
+```{r}
+ggplot() + theme_tufte(base_family = 'sans') +
+  geom_point(data = d,
+             aes(x = logMass, y = neocortex.prop), color = 'dodgerblue') +
+  geom_segment(data = imputed14_5,
+               aes(x = logMass, xend = logMass, 
+                   y = nc_pi_l, yend = nc_pi_h)) +
+  geom_point(data = imputed14_5,
+             aes(x = logMass, y = nc_imp_mean), shape = 21, fill = 'white') +
+  scale_x_continuous(breaks = seq(-2, 4))
+```
 
