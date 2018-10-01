@@ -1,2 +1,2 @@
 # rethinking
-Examples from rethinking book coded in Stan.
+Examples from rethinking book coded directly in Stan.

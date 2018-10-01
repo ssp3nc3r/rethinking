@@ -8,26 +8,24 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, 
                       warning = FALSE, message = FALSE, error = FALSE)
-library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+library(dplyr); library(tidyr); library(rstan); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
 
 # Chapter 4
-We'll use the following libraries:
-
-```{r, eval=FALSE}
-library(dplyr); library(tidyr); library(rstan); library(skimr)
-```
 
 ## 4.1 Why normal distributions are normal
 
 ### 4.1.1 Normal by addition
 
+Simulate a random walk.
+
 ```{r}
-N_reps <- 100; N_steps <- 16
+N_reps <- 1000; N_steps <- 16
 
 set.seed(TRUE)
 
-position <- 
+d <- 
   replicate(N_reps, runif(N_steps, -1, 1)) %>%               # simulate 16 steps
   as_tibble() %>%                                            # convert to tibble
   rbind(0, .) %>%                                            # include row of zeros for no steps
@@ -39,17 +37,42 @@ position <-
   ungroup()                                                  # ungroup
 ```
 
+Figure 4.2. Plot distributions of final positions.
+
 ```{r}
-ggplot(position) +
-  geom_line(aes(step, position, 
-                group = person),
-            color = 'dodgerblue',
-            alpha = .3) +
-  theme_tufte(base_family = 'sans')
+p1 <- ggplot(d) +
+  theme(panel.border = element_rect(fill = NA)) +
+  geom_line(aes(step, position, group = person),
+            color = 'dodgerblue', alpha = .1) +
+  geom_vline(xintercept = c(4, 8, 16), linetype = 'dashed') +
+  scale_x_continuous(breaks = c(0, 4, 8, 12, 16)) +
+  labs(x = 'step number', y = 'position')
 
+p2 <- ggplot(d %>% filter(step == 4)) +
+  theme(panel.border = element_rect(fill = NA)) +
+  geom_histogram(aes(x = position, y = ..density..), fill = 'dodgerblue', color = 'white') +
+  theme(plot.subtitle = element_text(hjust = .5)) +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = 'position', y = 'density', subtitle = '4 steps')
+
+p3 <- ggplot(d %>% filter(step == 8)) +
+  theme(panel.border = element_rect(fill = NA)) +
+  geom_histogram(aes(x = position, y = ..density..), fill = 'dodgerblue', color = 'white') +
+  theme(plot.subtitle = element_text(hjust = .5)) +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = 'position', y = 'density', subtitle = '8 steps')
+
+p4 <- ggplot(d %>% filter(step == 16)) +
+  theme(panel.border = element_rect(fill = NA)) +
+  geom_histogram(aes(x = position, y = ..density..), fill = 'dodgerblue', color = 'white') +
+  stat_function(fun = dnorm, args = list(mean = 0, sd = sd(d$position[d$step==16]))) +
+  theme(plot.subtitle = element_text(hjust = .5)) +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = 'position', y = 'density', subtitle = '16 steps')
+
+library(gridExtra); library(gtable)
+grid.arrange(p1, p2, p3, p4, layout_matrix = rbind(c(1), c(2, 3, 4)), nrow = 2)
 ```
-
-## 4.2 A language for describing models
 
 ## 4.3 A gaussian model of height
 
@@ -60,6 +83,8 @@ data('Howell1', package = 'rethinking')
 d  <- Howell1; rm(Howell1)
 d2 <- d %>% filter(age >= 18)
 ```
+
+### 4.3.2 The model
 
 Here's the Stan code, which is compiled and stored in object `m04_1` (which is specified but not shown below in the code chunk header):
 
@@ -210,7 +235,7 @@ dat <- list(N = NROW(d2),
             weight_c = d2$weight.c)
 ```
 
-Re-code the Stan model,
+Recode the Stan model,
 
 ```{stan output.var="m04_4"}
 data {
@@ -253,17 +278,18 @@ post %>% select(alpha, beta, sigma) %>% cor()
 
 #### 4.4.3.2 Plotting posterior inference against the data
 
-Plot original data against the mean intercept and slope:
+Figure 4.4. Plot original data against the mean intercept and slope:
 
 ```{r}
 post <- as.data.frame(fit04_3)
-p <- ggplot() + theme_tufte(base_family = 'sans') + lims(y = c(130, 180))
+p <- ggplot() + lims(y = c(130, 180))
 
 p1 <- p + 
   geom_point(data = d2,
              aes(weight, height), 
              shape = 1, color = 'dodgerblue') +
   geom_abline(intercept = mean(post$alpha), slope = mean(post$beta))
+p1
 ```
 
 Next, we'll show how uncertainty depends on how much data is used to fit the model. We'll use the first `10`, `50`, `150`, and `352` observations, respectively. With Stan, we have to re-sample the model each time.
@@ -298,7 +324,7 @@ fit04_3_4 <- sampling(m04_3, data = dat, iter = 1000, chains = 2, cores = 2)
 post4 <- as.data.frame(fit04_3_4)
 ```
 
-Let's graphically compare them:
+Figure 4.5. Let's graphically compare them:
 
 ```{r}
 N <- 10
@@ -345,13 +371,12 @@ library(gridExtra)
 grid.arrange(p1, p2, p3, p4, nrow = 2)
 ```
 
-Let's look at just the weight of `50` kg.
+Figure 4.6. Let's look at just the weight of `50` kg.
 
 ```{r}
 mu_at_50 <- post$alpha + post$beta * 50
 ggplot() + 
   geom_density(aes(x = mu_at_50), fill = 'lightskyblue1') +
-  theme_tufte(base_family = 'sans') +
   labs(x = 'mu | weight=50')
 ```
 
@@ -361,7 +386,7 @@ The Highest Posterior Density Interval (HPDI) with a credible interval of 80 per
 HDInterval::hdi(mu_at_50, credMass = 0.8)[1:2]
 ```
 
-The density at each weight can be shown as follows:
+Figure 4.7. The density at each weight can be shown as follows:
 
 ```{r}
 f_mu <- function(x) post$alpha + post$beta * x
@@ -380,7 +405,7 @@ mu <-
   ungroup() %>%
   mutate(weight = as.integer(weight))
 
-p <- ggplot() + theme_tufte(base_family = 'sans')
+p <- ggplot() 
 p1 <- p +
   geom_point(data = mu %>% filter(Iter < 101),
              aes(weight, height), alpha = .05, color = 'dodgerblue') +
@@ -399,7 +424,9 @@ p2 <- p +
 grid.arrange(p1, p2, nrow = 1)  
 ```
 
-#### Prediction intervals
+#### 4.4.3.5. Prediction intervals
+
+Figure 4.8
 
 ```{r}
 sim_ht <- 
@@ -425,7 +452,7 @@ p2 + geom_ribbon(data = sim_ht,
 
 ```
 
-## Polynomial regression
+## 4.5 Polynomial regression
 
 First, we standardize our weight.
 
@@ -476,7 +503,7 @@ Here's a model summary.
 print(fit04_5, probs = c(0.1, 0.5, 0.9))
 ```
 
-Let's graphically review.
+Figure 4.9 (b). Let's graphically review.
 
 ```{r}
 post <- as.data.frame(fit04_5)
