@@ -1,2 +1,3 @@
 # rethinking
-Examples from rethinking book coded directly in Stan.
+
+Examples from McElreath's *Statistical Rethinking* translated directly into Stan code.

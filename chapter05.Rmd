@@ -9,21 +9,33 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, 
                       warning = FALSE, message = FALSE, error = FALSE)
 library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
+
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 5 of McElreath's *Statistical Rethinking*.
 
 # Chapter 5
-We'll use the following libraries:
-
-```{r, eval=FALSE}
-library(dplyr); library(tidyr); library(rstan); library(skimr)
-```
-
-## 5.1 Spurious association
 
 ```{r}
 data('WaffleDivorce', package = 'rethinking')
 d  <- WaffleDivorce; rm(WaffleDivorce)
 ```
+
+Figure 5.1
+
+```{r}
+ggplot(d) +
+  stat_smooth(aes(WaffleHouses/Population, Divorce), method = 'lm', level = .89, 
+              fullrange = T, color = 'black', alpha = .1, lwd = .3) +
+  geom_point(aes(WaffleHouses/Population, Divorce), 
+             shape = 21, color = 'dodgerblue') +
+  geom_text(data = filter(d, Loc %in% c('AL', 'AR', 'GA', 'OK', 'ME', 'NJ', 'SC')),
+             aes(x = WaffleHouses/Population + 1.2, y = Divorce, label = Loc), size = 3) +
+  scale_x_continuous(limits = c(0, 50)) +
+  labs(x = 'Waffle Houses per million', y = 'Divorce Rate')
+```
+
+## 5.1 Spurious association
 
 Standardize the predictors
 
@@ -31,9 +43,9 @@ Standardize the predictors
 d <- d %>% 
   mutate(MedianAgeMarriage_z = (MedianAgeMarriage - mean(MedianAgeMarriage)) / 
                                sd(MedianAgeMarriage),
-         Marriage_z = (Marriage - mean(Marriage)) /
-                      sd(Marriage))
+         Marriage_z = (Marriage - mean(Marriage)) / sd(Marriage))
 ```
+
 
 Write a Stan model
 
@@ -116,7 +128,7 @@ Summarise the model
 print(fit05_2, probs = c(.1, .5, .9))
 ```
 
-Plot the first model,
+Setup plot for first model,
 
 ```{r}
 # draw from posterior samples
@@ -140,7 +152,7 @@ mu <-
   mutate(A_z = as.numeric(A_z))
 
 # plot raw data and model estimate of mu
-p <- ggplot() + theme_tufte(base_family = 'sans')
+p <- ggplot() 
 p1 <- p + 
   geom_point(data = d,
              aes(MedianAgeMarriage_z, Divorce), 
@@ -151,7 +163,7 @@ p1 <- p +
             aes(x = A_z, y = mu))
 ```
 
-Plot the second model
+Setup plot for second model
 
 ```{r}
 # draw from posterior samples
@@ -175,7 +187,6 @@ mu <-
   mutate(M_z = as.numeric(M_z))
 
 # plot raw data and model estimate of mu
-p <- ggplot() + theme_tufte(base_family = 'sans')
 p2 <- p + 
   geom_point(data = d,
              aes(Marriage_z, Divorce), 
@@ -186,10 +197,14 @@ p2 <- p +
             aes(x = M_z, y = mu))
 ```
 
+Figure 5.2
+
 ```{r}
 library(gridExtra)
 grid.arrange(p2, p1, nrow = 1)
 ```
+
+### 5.1.2. Fitting the model
 
 Fit model using both predictors
 
@@ -235,9 +250,7 @@ Summarise model
 print(fit05_3, probs = c(0.1, 0.5, 0.9))
 ```
 
-### Plotting multivariate posteriors
-
-#### residual plots
+### 5.1.3. Plotting multivariate posteriors
 
 ```{stan output.var="m05_4"}
 data {
@@ -273,6 +286,8 @@ fit05_4 <- sampling(m05_4, data = dat, iter = 1000, chains = 2, cores = 2)
 print(fit05_4, probs = c(0.1, 0.5, 0.9))
 ```
 
+#### 5.1.3.1 Predictor residual plots
+
 ```{r}
 post <- as.matrix(fit05_4)
 
@@ -281,16 +296,17 @@ mu <- rowMeans(mu)
 resid <- d$Marriage_z - mu
 
 ggplot() + 
-  theme_tufte(base_family = 'sans') +
-  geom_point(data = d,
-             aes(MedianAgeMarriage_z, Marriage_z), shape = 1, color = 'dodgerblue') +
-  geom_abline(aes(slope = mean(post[,"b"]), intercept = mean(post[,"a"]))) +
   geom_segment(aes(x = d$MedianAgeMarriage_z, 
                    xend = d$MedianAgeMarriage_z,
-                   y = mu, yend = d$Marriage_z))
+                   y = mu, yend = d$Marriage_z)) +
+  geom_point(data = d,
+             aes(MedianAgeMarriage_z, Marriage_z), 
+             shape = 21, color = 'dodgerblue', fill = 'white') +
+  geom_abline(aes(slope = mean(post[,"b"]), intercept = mean(post[,"a"])))
+
 ```
 
-#### counterfactual plots
+#### 5.1.3.2 counterfactual plots
 
 
 ```{r}
@@ -328,9 +344,10 @@ nd <-
             y_hdi_h = y_hat_hdi[2,])
 ```
 
+Setup Figure 5.5a
+
 ```{r}
 p1 <- ggplot(nd, aes(x = median_age_z, y = avg, group = marriage_z)) + 
-  theme_tufte(base_family = 'sans') +
   geom_line(data = nd,
             color = 'gray90') +
   geom_ribbon(data = nd %>% filter(marriage_z == 0),
@@ -346,11 +363,10 @@ p1 <- ggplot(nd, aes(x = median_age_z, y = avg, group = marriage_z)) +
   labs(x = 'Standardized Median Age of Marriage', y = 'Divorce rate') 
 ```
 
-
+Setup Figure 5.5b
 
 ```{r}
 p2 <- ggplot(nd, aes(x = marriage_z, y = avg, group = median_age_z)) + 
-  theme_tufte(base_family = 'sans') +
   geom_line(data = nd,
             color = 'gray90') +
   geom_ribbon(data = nd %>% filter(median_age_z == 0),
@@ -366,12 +382,14 @@ p2 <- ggplot(nd, aes(x = marriage_z, y = avg, group = median_age_z)) +
   labs(x = 'Standardized Rate of Marriage', y = 'Divorce rate')
 ```
 
+Figure 5.5
+
 ```{r}
 grid.arrange(p2, p1, nrow = 1)
 ```
 
 
-#### posterior prediction plots
+#### 5.1.3.3 posterior prediction plots
 
 ```{r}
 # estimate mu
@@ -396,10 +414,10 @@ d <- d %>% mutate(mu = avg,
                   y_hdi_h = y_hat_hdi[2,])
 ```
 
-predicted versus observed
+Figure 5.6a predicted versus observed
 
 ```{r}
-ggplot() + theme_tufte(base_family = 'sans') +
+ggplot() + 
   geom_abline(intercept = 0, slope = 1, 
               linetype = 'dashed', color = 'gray70') +
   geom_segment(data = d,
@@ -414,10 +432,40 @@ ggplot() + theme_tufte(base_family = 'sans') +
 
 ```
 
-finish next two plots
+Figure 5.6b
 
+```{r}
+d1 <- d %>% 
+  mutate(pred_err = Divorce - mu) %>%
+  mutate(Loc = factor(Loc, levels = Loc[order(Divorce - mu)] ))
 
-## 5.2 Masked relationships
+ggplot(d1) +
+  geom_vline(xintercept = 0, color = 'gray80') +
+  geom_segment(aes(x = -6, xend = 6, y = Loc, yend = Loc), 
+               linetype = 'dotted', color = 'gray90') +
+  geom_segment(aes(x = Divorce - mu_hdi_h, xend = Divorce - mu_hdi_l,
+                   y = Loc, yend = Loc), 
+               shape = 3, color = 'black') +
+  geom_point(aes(Divorce - mu, Loc), shape = 21, fill = 'white') +
+  geom_point(aes(Divorce - y_hdi_l, Loc), shape = 3, color = 'gray80') +
+  geom_point(aes(Divorce - y_hdi_h, Loc), shape = 3, color = 'gray80') +
+  scale_x_continuous(limits = c(-6, 6)) +
+  labs(x = '', y = '')
+```
+
+Figure 5.6c
+
+```{r}
+ggplot() +
+  stat_smooth(data = d,
+              aes(WaffleHouses/Population, Divorce - mu), method = 'lm', fullrange = T, color = 'black', alpha = .2, lwd = .4) +
+  geom_point(data = d,
+             aes(WaffleHouses/Population, Divorce - mu), shape = 21, color = 'dodgerblue') +
+  geom_text(data = filter(d, Loc %in% c('AL', 'AR', 'GA', 'OK', 'ME', 'NJ', 'SC')),
+             aes(x = WaffleHouses/Population + 1.2, y = Divorce - mu, label = Loc), size = 3) +
+  labs(x = 'Waffles per capita', y = 'Divorce error')
+```
+
 
 
 

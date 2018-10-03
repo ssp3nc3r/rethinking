@@ -9,7 +9,12 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, 
                       warning = FALSE, message = FALSE, error = FALSE)
 library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
+
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 12 of McElreath's *Statistical Rethinking*.
+
+## 12.1. Example: Multilevel tadpoles
 
 Load the data.
 
@@ -19,7 +24,7 @@ d <-  reedfrogs; rm(reedfrogs)
 d <- d %>% mutate(tank = seq(NROW(d)))
 ```
 
-Code model in stan.
+Code first model in Stan.
 
 ```{stan output.var="m12_1"}
 data {
@@ -48,6 +53,7 @@ generated quantities {
   }
   }
 }
+
 ```
 
 Organize data and sample from model.
@@ -70,7 +76,7 @@ Summary
 print(fit12_1, include = F, pars = "log_lik", probs = c(.1, .5, .9))
 ```
 
-Code multilevel in Stan.
+Code second, multilevel in Stan.
 
 ```{stan output.var="m12_2"}
 data {
@@ -138,11 +144,13 @@ loo::compare(loo12_1, loo12_2)
 
 Review estimates for each tank.
 
+Figure 12.1
+
 ```{r}
 post12_2 <- as.data.frame(fit12_2, pars = c('alpha', 'sigma', 'a_tank'))
 d$propsurv_est <- post12_2[,-c(1:2)] %>% colMeans %>% plogis
 
-ggplot(d) + theme_tufte(base_family = 'sans') +
+ggplot(d) + 
   geom_vline(xintercept = c(16.5, 32.5)) +
   geom_hline(yintercept = plogis(mean(post12_2$alpha)), linetype = 'dashed') +
   geom_point(aes(x = tank, y = propsurv), color = 'dodgerblue') +
@@ -157,6 +165,8 @@ ggplot(d) + theme_tufte(base_family = 'sans') +
 
 Simulate survival rates.
 
+Figure 12.2 left side
+
 ```{r}
 for(i in 1:100) 
   curve(dnorm(x, post12_2$alpha[i], post12_2$sigma[i]), 
@@ -168,20 +178,21 @@ for(i in 1:100)
         ylab = 'Density')
 ```
 
-
+Figure 12.2 right side
 
 ```{r}
 sim_tanks <- 
   rnorm(8000, post12_2$alpha, post12_2$sigma) %>% 
   plogis
-ggplot() + theme_tufte(base_family = 'sans') +
+
+ggplot() + 
   geom_density(aes(sim_tanks), fill = 'skyblue') +
   labs(x = "Probability survival", y = "Density")
 ```
 
 ## 12.2 Varying effects and the underfitting/overfitting trade-off
 
-Assign values to the parameters.
+### 12.2.2. Assign values to the parameters.
 
 ```{r}
 a <- 1.4
@@ -199,9 +210,7 @@ dsim <- data.frame(pond = 1:nponds, ni=ni, true_a = a_pond)
 dsim$si <- rbinom(nponds, prob = plogis(dsim$true_a), size = dsim$ni)
 ```
 
-
 ### 12.2.4 compute the no-pooling estimates
-
 
 ```{r}
 dsim$no_pool <- dsim$si / dsim$ni
@@ -253,6 +262,7 @@ Summarise model.
 print(fit12_3, probs = c(.1, .5, .9))
 ```
 
+Figure 12.3
 
 ```{r}
 post12_3 <- as.data.frame(fit12_3, pars = 'a_pond')
@@ -266,7 +276,7 @@ dsim <- dsim %>%
          pp_err_mean = mean(partpool_err)) %>% 
   ungroup
 
-ggplot(dsim) + theme_tufte(base_family = 'sans') +
+ggplot(dsim) + 
   geom_point(aes(x = pond, y = nopool_err), color = 'dodgerblue') +
   geom_point(aes(x = pond, y = partpool_err), shape = 21) +
   geom_line(aes(x = pond, y = np_err_mean, group = ni), color = 'dodgerblue') +
@@ -280,12 +290,11 @@ ggplot(dsim) + theme_tufte(base_family = 'sans') +
   
 ```
 
-
 ## 12.3 More than one type of cluster
 
 ### 12.3.1 multilevel chimpanzees
 
-Write model
+Code the model
 
 ```{stan output.var="m12_4"}
 data {
@@ -325,6 +334,7 @@ generated quantities {
   }
   }
 }
+
 ```
 
 Organize data and sample from model.
@@ -454,8 +464,6 @@ loo::compare(waic12_4, waic12_5)
 loo12_4 <- loo(ll12_4, r_eff = reff12_4, cores = 2)
 loo12_5 <- loo(ll12_5, r_eff = reff12_5, cores = 2)
 loo::compare(loo12_4, loo12_5)
-
-
 ```
 
 ## 12.4 Multilevel posterior predictions
@@ -485,7 +493,7 @@ nd <- nd %>% mutate(PC = interaction(P, C, sep = '/'),
                     p_mu_hpdi_l = p_mu_hpdi[1,],
                     p_mu_hpdi_h = p_mu_hpdi[2,])
 
-ggplot(nd) + theme_tufte(base_family = 'sans') +
+ggplot(nd) + 
   geom_ribbon(aes(x = 1:4, 
                   ymin = p_mu_hpdi_l,
                   ymax = p_mu_hpdi_h),
@@ -517,7 +525,7 @@ nd <- nd %>% mutate(PC = interaction(P, C, sep = '/'),
                     p_mu_hpdi_l = p_mu_hpdi[1,],
                     p_mu_hpdi_h = p_mu_hpdi[2,])
 
-p1 <- ggplot(nd) + theme_tufte(base_family = 'sans') +
+p1 <- ggplot(nd) +
   geom_ribbon(aes(x = 1:4, 
                   ymin = p_mu_hpdi_l,
                   ymax = p_mu_hpdi_h),
@@ -544,7 +552,7 @@ nd <- nd %>% mutate(sim_mu = sim_mu_mean,
                     sim_mu_hpdi_l = sim_mu_hpdi[1,],
                     sim_mu_hpdi_h = sim_mu_hpdi[2,])
 
-p2 <- ggplot(nd) + theme_tufte(base_family = 'sans') +
+p2 <- ggplot(nd) + 
   geom_ribbon(aes(x = 1:4, 
                   ymin = sim_mu_hpdi_l,
                   ymax = sim_mu_hpdi_h),
@@ -567,6 +575,7 @@ p3 <- ggplot() + theme_tufte(base_family = 'sans') +
   labs(x = 'Prosocial Left / Condition', y = 'Proportion pulled left', subtitle = '50 Simulations of actor')
 ```
 
+Figure 12.5
 
 ```{r, fig.width=8}
 library(gridExtra)
@@ -676,10 +685,10 @@ nd <- nd %>% mutate(sim_mean = sim_mean,
                     sim_hpdi_h67 = sim_hpdi67[2,])
 ```
 
-Plot it.
+Figure 12.6
 
 ```{r}
-ggplot(nd) + theme_tufte(base_family = 'sans') +
+ggplot(nd) + 
   geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l97), ymax = exp(sim_hpdi_h97)), alpha = .1) +
   geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l89), ymax = exp(sim_hpdi_h89)), alpha = .1) +
   geom_ribbon(aes(x = log(P), ymin = exp(sim_hpdi_l67), ymax = exp(sim_hpdi_h67)), alpha = .1) +

@@ -9,7 +9,14 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, 
                       warning = FALSE, message = FALSE, error = FALSE)
 library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
+
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 11 of McElreath's *Statistical Rethinking*.
+
+## 11.1. Ordered categorical outcomes
+
+### 11.1.1. Example: Moral intuition
 
 load in data
 
@@ -18,10 +25,12 @@ data('Trolley', package = 'rethinking')
 d <- Trolley; rm(Trolley)
 ```
 
-Plots
+### 11.1.2. Describing an ordered distribution with intercepts
+
+Setup three plots for figure 11.1
 
 ```{r}
-p1 <- d %>% ggplot() + theme_tufte(base_family = 'sans') + geom_bar(aes(x = as.factor(response)), width = .035)
+p1 <- ggplot(d) + geom_bar(aes(x = as.factor(response)), width = .035)
 ```
 
 ```{r}
@@ -29,7 +38,7 @@ p2 <- d %>%
   group_by(response) %>% 
   summarise(prop = n() / NROW(d)) %>% 
   mutate(cumprob = cumsum(prop)) %>%
-  ggplot() + theme_tufte(base_family = 'sans') +
+  ggplot() + 
   geom_line(aes(x = response, y = cumprob)) +
   geom_point(aes(x = response, y = cumprob), shape = 21, fill = 'white') +
   scale_x_continuous(breaks = seq(1, 7)) +
@@ -43,12 +52,14 @@ p3 <- d %>%
   mutate(cumprob = cumsum(prop)) %>% 
   mutate(lco = log(cumprob/(1 - cumprob))) %>%
   filter(lco < Inf) %>%
-  ggplot() + theme_tufte(base_family = 'sans') +
+  ggplot() + 
   geom_line(aes(x = response, y = lco)) +
   geom_point(aes(x = response, y = lco), shape = 21, fill = 'white') +
   scale_x_continuous(breaks = seq(1, 7)) +
   scale_y_continuous(breaks = seq(-1, 1, by = 1)) 
 ```
+
+Figure 11.1
 
 ```{r}
 library(gridExtra)
@@ -59,93 +70,79 @@ Create a first model, no predictors.
 
 ```{stan output.var="m11_1"}
 data{
-    int<lower=1> N;
-    int response[N];
+  int<lower=1> N;
+  int response[N];
 }
 parameters{
-    ordered[6] cutpoints;
+  ordered[6] cutpoints;
 }
 model{
-    vector[N] phi;
-    cutpoints ~ normal( 0 , 10 );
-    for ( i in 1:N ) 
-      phi[i] = 0;
-    for ( i in 1:N )
-      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  vector[N] phi;
+  target += normal_lpdf(cutpoints | 0 , 10 );
+  for ( i in 1:N ) phi[i] = 0;
+  for ( i in 1:N ) target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
 }
 generated quantities {
   vector[N] log_lik;
   {
   vector[N] phi;
-  for ( i in 1:N ) 
-      phi[i] = 0;
-  for ( i in 1:N )
-      log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  for ( i in 1:N ) phi[i] = 0;
+  for ( i in 1:N ) log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
   }
 }
+
 ```
 
 Organize data and sample from model.
 
 ```{r}
-dat <- list(
-  N = NROW(d),
-  response = d$response
-)
-
+dat <- list(N = NROW(d), response = d$response)
 fit11_1 <- sampling(m11_1, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
 
 Create second model, including predictors.
 
 ```{stan output.var="m11_2"}
- data{
-    int<lower=1> N;
-    int response[N];
-    int action[N];
-    int intention[N];
-    int contact[N];
+ data {
+  int N;
+  int response[N];
+  int action[N];
+  int intention[N];
+  int contact[N];
 }
-parameters{
-    ordered[6] cutpoints;
-    real bA;
-    real bI;
-    real bC;
+parameters {
+  ordered[6] cutpoints;
+  real bA;
+  real bI;
+  real bC;
 }
-model{
-    vector[N] phi;
-    cutpoints ~ normal( 0 , 10 );
-    for ( i in 1:N ) 
-      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
-    for ( i in 1:N )
-      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
-    target += normal_lpdf(bA | 0, 10);
-    target += normal_lpdf(bI | 0, 10);
-    target += normal_lpdf(bC | 0, 10);
+model {
+  vector[N] phi;
+  target += normal_lpdf(cutpoints | 0 , 10 );
+  for ( i in 1:N ) phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
+  for ( i in 1:N ) target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  target += normal_lpdf(bA | 0, 10);
+  target += normal_lpdf(bI | 0, 10);
+  target += normal_lpdf(bC | 0, 10);
 }
 generated quantities {
   vector[N] log_lik;
   {
   vector[N] phi;
-    for ( i in 1:N ) 
-      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
-    for ( i in 1:N )
-      log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  for ( i in 1:N ) 
+    phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i];
+  for ( i in 1:N )
+    log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
   }
 }
+
 ```
 
 Organize data and sample from model.
 
 ```{r}
-dat <- list(
-  N = NROW(d),
-  response = d$response,
-  action = d$action,
-  intention = d$intention,
-  contact = d$contact
-)
-
+dat <- list(N = NROW(d), response = d$response, action = d$action,
+            intention = d$intention, contact = d$contact)
 fit11_2 <- sampling(m11_2, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
 
@@ -153,33 +150,33 @@ Create third model, including an interaction.
 
 ```{stan output.var="m11_3"}
  data{
-    int<lower=1> N;
-    int response[N];
-    int action[N];
-    int intention[N];
-    int contact[N];
+  int N;
+  int response[N];
+  int action[N];
+  int intention[N];
+  int contact[N];
 }
 parameters{
-    ordered[6] cutpoints;
-    real bA;
-    real bI;
-    real bC;
-    real bAI;
-    real bCI;
+  ordered[6] cutpoints;
+  real bA;
+  real bI;
+  real bC;
+  real bAI;
+  real bCI;
 }
 model{
-    vector[N] phi;
-    cutpoints ~ normal( 0 , 10 );
-    for ( i in 1:N ) 
-      phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i] + 
-               bAI * action[i] * intention[i] + bCI * contact[i] * intention[i];
-    for ( i in 1:N )
-      target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
-    target += normal_lpdf(bA | 0, 10);
-    target += normal_lpdf(bI | 0, 10);
-    target += normal_lpdf(bC | 0, 10);
-    target += normal_lpdf(bAI | 0, 10);
-    target += normal_lpdf(bCI | 0, 10);
+  vector[N] phi;
+  target += normal_lpdf(cutpoints | 0 , 10 );
+  for ( i in 1:N ) 
+    phi[i] = bA * action[i] + bI * intention[i] + bC * contact[i] + 
+             bAI * action[i] * intention[i] + bCI * contact[i] * intention[i];
+  for ( i in 1:N )
+    target += ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
+  target += normal_lpdf(bA | 0, 10);
+  target += normal_lpdf(bI | 0, 10);
+  target += normal_lpdf(bC | 0, 10);
+  target += normal_lpdf(bAI | 0, 10);
+  target += normal_lpdf(bCI | 0, 10);
 }
 generated quantities {
   vector[N] log_lik;
@@ -192,18 +189,14 @@ generated quantities {
       log_lik[i] = ordered_logistic_lpmf(response[i] | phi[i] , cutpoints );
   }
 }
+
 ```
 
 Organize data and sample from model.
 
 ```{r}
-dat <- list(
-  N = NROW(d),
-  response = d$response,
-  action = d$action,
-  intention = d$intention,
-  contact = d$contact
-)
+dat <- list(N = NROW(d), response = d$response, action = d$action,
+            intention = d$intention, contact = d$contact)
 
 fit11_3 <- sampling(m11_3, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
@@ -231,8 +224,6 @@ Plot 11.3
 ```{r}
 post11_3 <- as.data.frame(fit11_3, 
                           pars = c('cutpoints', 'bA', 'bI', 'bC', 'bAI', 'bCI'))
-post11_3 <- post11_3 %>% 
-  mutate(prob)
 
 f_phi <- function(action, intention, contact)  with(post11_3, 
                          bA * action + bI * intention + bC * contact + 
@@ -273,7 +264,7 @@ for(i in seq(1000))
 pK <- plyr::adply(pK, c(1, 3))
 colnames(pK) <- c('iter', 'cutpoint', 'var1', 'var2')
 
-# create plot 1
+# create plot 2
 pK_cuts <- pK %>% group_by(cutpoint) %>% summarise(y_lab = mean(var1))
 p2 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
   geom_segment(aes(x = 0, xend = 1,  y = var1, yend = var2), alpha = .01, color = 'skyblue' ) +
@@ -294,7 +285,7 @@ for(i in seq(1000))
 pK <- plyr::adply(pK, c(1, 3))
 colnames(pK) <- c('iter', 'cutpoint', 'var1', 'var2')
 
-# create plot 1
+# create plot 3
 pK_cuts <- pK %>% group_by(cutpoint) %>% summarise(y_lab = mean(var1))
 p3 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
   geom_segment(aes(x = 0, xend = 1,  y = var1, yend = var2), alpha = .01, color = 'skyblue' ) +
@@ -304,10 +295,11 @@ p3 <- ggplot(pK) + theme_tufte(base_family = 'sans') +
   labs(x = "Intention", y = "Probability", subtitle = "action = 0, contact = 1")
 ```
 
+Figure 11.3
+
 ```{r}
 grid.arrange(p1, p2, p3, nrow = 1)
 ```
-
 
 ### 11.2.1 example: zero-inflated poisson
 
@@ -319,8 +311,6 @@ rate_work <- 1
 N <- 365
 drink <- rbinom(N, 1, prob_drink)
 y <- (1 - drink) * rpois(N, rate_work)
-d <- data.frame(y = y,
-                drink = drink)
 ```
 
 plot data
@@ -333,16 +323,17 @@ zeros_total <- sum(y == 0)
 d <- data.frame(y, drink)
 ```
 
+Figure 11.4 Right side
+
 ```{r}
 ggplot(d) + 
-  theme_tufte(base_family = 'sans') + 
   geom_bar(aes(y), width = .04) + 
   geom_bar(aes(y, group = as.factor(drink==0), fill = drink), width = .04) +
   scale_x_continuous(breaks = seq(0, 6)) + 
   theme(legend.position = '')
 ```
 
-Write a model.
+Code a model.
 
 ```{stan output.var="m11_4"}
 data {
@@ -375,13 +366,11 @@ model {
 Organize data and sample from model.
 
 ```{r}
-dat <- list(
-  N = length(y),
-  y = y
-)
-
+dat <- list(N = length(y), y = y)
 fit11_4 <- sampling(m11_4, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
+
+Summarise model
 
 ```{r}
 print(fit11_4, probs = c(.1, .5, .9))
@@ -425,14 +414,11 @@ model {
 Organize data and sample from model.
 
 ```{r}
-dat <- list(
-  N = NROW(d),
-  admit = d$admit,
-  applications = d$applications
-)
-
+dat <- list(N = NROW(d), admit = d$admit, applications = d$applications)
 fit11_5 <- sampling(m11_5, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
+
+Summaise model
 
 ```{r}
 print(fit11_5, probs = c(.1, .5, .9))
@@ -465,9 +451,6 @@ curve(dbeta(x,
       from = 0, to = 1, 
       add = T, lwd = 2, ylim = c(0, 3))
 ```
-
-### 11.3.2 Negative-binomial or negative-poisson
-
 
 
 

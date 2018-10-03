@@ -9,8 +9,10 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, 
                       warning = FALSE, message = FALSE, error = FALSE)
 library(dplyr); library(tidyr); library(rstan); library(skimr); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
 
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 13 of McElreath's *Statistical Rethinking*.
 
 ## 13.1 Varying slopes by construction
 
@@ -57,9 +59,10 @@ a_cafe <- vary_effects[,1]
 b_cafe <- vary_effects[,2]
 ```
 
+Figure 13.2
 
 ```{r}
-ggplot() + theme_tufte(base_family = 'sans') +
+ggplot() + 
   geom_point(aes(a_cafe, b_cafe), shape = 21, color = 'dodgerblue') +
   stat_ellipse(aes(a_cafe, b_cafe), level = .50, alpha = .1) +
   stat_ellipse(aes(a_cafe, b_cafe), level = .89, alpha = .1) +
@@ -133,6 +136,7 @@ generated quantities {
   }
   }
 }
+
 ```
 
 Organize data and sample from model.
@@ -155,12 +159,14 @@ print(fit13_1, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
 
 Examine correlation.
 
+Figure 13.4
+
 ```{r}
 rho_prior <- rethinking::rlkjcorr(5000, 2, 2)
 
 post13_1 <- as.data.frame(fit13_1)
 
-ggplot(post13_1) + theme_tufte(base_family = 'sans') +
+ggplot(post13_1) + 
   geom_density(aes(x = `Rho[1,2]`), color = 'dodgerblue') +
   geom_density(aes(x = rho_prior[, 1, 2]), linetype = 'dashed') +
   annotate('text', x=0.2, y = .75, label = 'prior') +
@@ -169,6 +175,8 @@ ggplot(post13_1) + theme_tufte(base_family = 'sans') +
 ```
 
 Compare slope and intercept for regularized varying effects to unpooled estimates.
+
+Figure 13.5 left side
 
 ```{r}
 # calculate unpooled estimates from the data
@@ -195,6 +203,8 @@ ggplot(df) + theme_tufte(base_family = 'sans') +
 ```
 
 Compare wait times for regularized varying effects to unpooled estimates.
+
+Figure 13.5 Right side
 
 ```{r}
 df <- df %>% 
@@ -226,6 +236,8 @@ d <- UCBadmit; rm(UCBadmit)
 d <- d %>% mutate(male = applicant.gender == 'male',
                   dept_id = as.integer(dept))
 ```
+
+### 13.2.1. Varying intercepts
 
 Code model in Stan.
 
@@ -280,6 +292,8 @@ dat <- list(
 
 fit13_2 <- sampling(m13_2, data = dat, iter = 1000, chains = 2, cores = 2)
 ```
+
+Summarize the model
 
 ```{r}
 print(fit13_2, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
@@ -353,13 +367,18 @@ fit13_3 <- sampling(m13_3, data = dat, iter = 1000, chains = 2, cores = 2)
 print(fit13_3, include = F, pars = 'log_lik', probs = c(.1, .5, .9))
 ```
 
+13.2.3. Shrinkage
+
+Figure 13.6 left side
+
 ```{r}
 post13_3 <- as.data.frame(fit13_3)
-ggplot() + theme_tufte(base_family = 'sans') +
+ggplot() + 
   geom_density(aes(post13_3$`Sigma[1,2]`)) +
   labs(x = 'correlation')
-
 ```
+
+Figure 13.6 Right side
 
 ```{r}
 a1 <- d %>% filter(male == 0) %>% group_by(dept_id) %>% summarise(avg = admit/applications) %>% .$avg
@@ -543,12 +562,12 @@ Organize data and sample from model.
 dat <- list(
   N = NROW(d),
   N_actors = max(d$actor),
-  N_blocks = max(d$block_id),
+  N_blocks = max(d$block),
   L = d$pulled_left,
   C = d$condition,
   P = d$prosoc_left,
   actor_id = d$actor,
-  block_id = d$block_id
+  block_id = d$block
 )
 
 fit13_6 <- sampling(m13_6, data = dat, iter = 1000, chains = 2, cores = 2)
@@ -698,7 +717,7 @@ transformed parameters{
     vector[N_blocks] bpc_block;
     matrix[3,3] Rho_block;
     
-    v_actor = (diag_pre_multiply(sigma_actor,L_Rho_actor) * z_actor)';  // TODO: LEARN ABOUT diag_pre_multiply
+    v_actor = (diag_pre_multiply(sigma_actor,L_Rho_actor) * z_actor)';  
     a_actor   = v_actor[,1];
     bp_actor  = v_actor[,2];
     bpc_actor = v_actor[,3];
@@ -724,7 +743,7 @@ model{
     target += normal_lpdf(a | 0 , 1 );
     target += normal_lpdf(bp |0 , 1 );
     target += normal_lpdf(bpc | 0 , 1 );
-    target += normal_lpdf(to_vector(z_block) | 0 , 1 );  // TODO: LEARN ABOUT to_vector
+    target += normal_lpdf(to_vector(z_block) | 0 , 1 ); 
     target += normal_lpdf(to_vector(z_actor) | 0 , 1 );
     
     // linear models
@@ -788,6 +807,8 @@ colnames(Dmat) <- c("Ml","Ti","SC","Ya","Fi","Tr","Ch","Mn","To","Ha")
 ```
 
 Review shapes of covariance using linear and squared representations.
+
+Figure 13.8
 
 ```{r}
 ex <- data.frame(dist = seq(0, 5, by = .01)) %>% 
@@ -869,6 +890,8 @@ print(fit13_7, probs = c(0.1, 0.5, 0.9))
 
 Posterior distribution of the spatial covariance.
 
+Figure 13.9
+
 ```{r}
 post13_7 <- as.data.frame(fit13_7, pars = c('etasq', 'rhosq'))
 
@@ -906,6 +929,8 @@ round(Rho, 2)
 
 Map of societies.
 
+Figure 13.10 left side
+
 ```{r}
 colnames(Rho) <- rownames(Rho)
 Rho[upper.tri(Rho, diag = T)] <- NA
@@ -925,6 +950,8 @@ ggplot() + theme_tufte(base_family = 'sans') +
 ```
 
 Plot tools versus log population.
+
+Figure 13.10 right side
 
 ```{r}
 post <- as.data.frame(fit13_7, pars = c('alpha', 'beta_lpop'))

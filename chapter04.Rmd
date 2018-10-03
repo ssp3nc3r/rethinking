@@ -12,6 +12,16 @@ library(dplyr); library(tidyr); library(rstan); library(ggplot2); library(ggthem
 theme_set(theme_tufte(base_family = 'sans'))
 ```
 
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 4 of McElreath's *Statistical Rethinking*.
+
+I'll use the following packages throughout:
+
+```{r}
+library(dplyr); library(tidyr); library(rstan); library(ggplot2); library(ggthemes)
+```
+
+For graphics, I'll set ggplot's theme like so, `theme_set(theme_tufte(base_family = 'sans'))`.
+
 # Chapter 4
 
 ## 4.1 Why normal distributions are normal

@@ -6,19 +6,33 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, message = FALSE, error = FALSE)
+library(dplyr); library(tidyr); library(rstan); library(ggplot2); library(ggthemes)
+theme_set(theme_tufte(base_family = 'sans'))
 ```
+
+The code below is meant as a directly-in-Stan translation of the examples in Chapter 7 of McElreath's *Statistical Rethinking*.
+
+## 7.1 Building an interaction
 
 Load data.
 
 ```{r}
- data('rugged', package = 'rethinking')
+data('rugged', package = 'rethinking')
 d  <- rugged; rm(rugged)
+```
+
+Transform data.
+
+```{r}
 d$loggdp <- log(d$rgdppc_2000)
 d <- d[complete.cases(d$loggdp),]
 d.A1 <- d[d$cont_africa==1,]
 d.A0 <- d[d$cont_africa==0,]
 ```
+
+Code model.
 
 ```{stan output.var="m07_1"}
 data {
@@ -51,7 +65,7 @@ dat <- list(
   rugged = d.A1$rugged
 )
 
-fit07_1 <- sampling(m07_1, data = dat, iter = 4000, chains = 2, cores = 2)
+fit07_1 <- sampling(m07_1, data = dat, iter = 10000, chains = 4, cores = 4)
 ```
 
 
@@ -72,11 +86,13 @@ y_hat_avg <- colMeans(y_hat)
 y_hat_pi <- apply(y_hat, 2, rethinking::PI)
 ```
 
+Figure 7.2a
+
 ```{r}
 ggplot() + 
   geom_point(data = d.A1,
-             aes(rugged, loggdp)) +
-  geom_ribbon(aes(x = d.A1$rugged, ymin = y_hat_pi[1,], ymax = y_hat_pi[2,]), alpha = .2) +
+             aes(rugged, loggdp), shape = 21, color = 'dodgerblue') +
+  #geom_ribbon(aes(x = d.A1$rugged, ymin = y_hat_pi[1,], ymax = y_hat_pi[2,]), alpha = .2) +
   geom_ribbon(aes(x = d.A1$rugged, ymin = mu_hpdi[1,], ymax = mu_hpdi[2,]), alpha = .2) +
   geom_abline(slope = mean(post$bR), intercept = mean(post$a) )
 ```
@@ -88,6 +104,622 @@ dat <- list(
   rugged = d.A0$rugged
 )
 
-fit07_2 <- sampling(m07_2, data = dat, iter = 1000, chains = 2, cores = 2)
+fit07_2 <- sampling(m07_2, data = dat, iter = 10000, chains = 4, cores = 4)
 ```
+
+
+```{r}
+post <- as.data.frame(fit07_2)
+
+mu <- post$a + d.A0$rugged %*% t(post$bR)
+mu_mean <- rowMeans(mu)
+mu_hpdi <- apply(mu, 1, rethinking::HPDI)
+
+# simulate loggdp
+iter <- 1e5
+y_hat <- matrix(nrow = iter, ncol = NROW(d.A0))
+for(i in 1:NROW(d.A0)) y_hat[,i] <- rnorm(iter, post[,"a"] + d.A0[i,"rugged"] %*% t(post[,"bR"]), post[,"sigma"])
+
+# get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_pi <- apply(y_hat, 2, rethinking::PI)
+```
+
+Figure 7.2b
+
+```{r}
+ggplot() + 
+  geom_point(data = d.A0,
+             aes(rugged, loggdp), shape = 21, color = 'dodgerblue') +
+  #geom_ribbon(aes(x = d.A0$rugged, ymin = y_hat_pi[1,], ymax = y_hat_pi[2,]), alpha = .2) +
+  geom_ribbon(aes(x = d.A0$rugged, ymin = mu_hpdi[1,], ymax = mu_hpdi[2,]), alpha = .2) +
+  geom_abline(slope = mean(post$bR), intercept = mean(post$a) )
+```
+
+### 7.1.1 Adding a dummy variable doesn't work
+
+First re-sample model above with all data (with and without Africa). Need to re-code model to include log likelihood in `generated quantities` block since we will be comparing the two models.
+
+```{stan output.var="m07_3"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+}
+parameters {
+  real a;
+  real bR;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu = a + bR * rugged;
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(n in 1:N) {
+    mu[n] = a + bR * rugged[n];
+    log_lik[n] = normal_lpdf(loggdp[n] | mu[n], sigma);
+  }
+  }
+}
+
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  loggdp = d$loggdp,
+  rugged = d$rugged
+)
+
+fit07_3 <- sampling(m07_3, data = dat, iter = 10000, chains = 4, cores = 4)
+```
+
+Now code a model that uses a dummary variable for Africa.
+
+```{stan output.var="m07_4"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+  vector<lower=0,upper=1>[N] cont_africa;
+}
+parameters {
+  real a;
+  real bR;
+  real bA;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu = a + bR * rugged + bA * cont_africa;
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+  target += normal_lpdf(bA | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(n in 1:N) {
+    mu[n] = a + bR * rugged[n] + bA * cont_africa[n];
+    log_lik[n] = normal_lpdf(loggdp[n] | mu[n], sigma);
+  }
+  }
+}
+
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  loggdp = d$loggdp,
+  rugged = d$rugged,
+  cont_africa = d$cont_africa
+)
+
+fit07_4 <- sampling(m07_4, data = dat, iter = 10000, chains = 4, cores = 4)
+```
+
+Calculate WAIC and compare models
+
+```{r}
+# compare models
+library(loo)
+
+log_lik_07_3 <- extract_log_lik(fit07_3, merge_chains = FALSE)
+waic07_3 <- waic(log_lik_07_3)
+
+log_lik_07_4 <- extract_log_lik(fit07_4, merge_chains = FALSE)
+waic07_4 <- waic(log_lik_07_4)
+
+mod_comp <- compare(waic07_3, waic07_4)
+mod_comp
+```
+
+TODO: above does not include model weighting. 
+
+Plot predictions using model `m07_4`.
+
+```{r}
+post <- as.data.frame(fit07_4)
+
+mu <- post$a + d$rugged %*% t(post$bR) + d$cont_africa %*% t(post$bA)
+mu_mean <- rowMeans(mu)
+mu_hpdi <- apply(mu, 1, rethinking::HPDI)
+
+# simulate loggdp
+iter <- 1e5
+y_hat <- matrix(nrow = iter, ncol = NROW(d))
+for(i in 1:NROW(d)) y_hat[,i] <- rnorm(iter, post[,"a"] + d[i,"rugged"] %*% t(post[,"bR"]) + d[i,"cont_africa"] %*% t(post[,"bA"]), post[,"sigma"])
+
+# get stats on sim
+y_hat_avg <- colMeans(y_hat)
+y_hat_pi <- apply(y_hat, 2, rethinking::PI)
+```
+
+Figure 7.3
+
+```{r}
+d_04 <- d %>% 
+  mutate(mu_mean = mu_mean,
+         mu_hpdi_l = mu_hpdi[1,],
+         mu_hpdi_h = mu_hpdi[2,])
+
+ggplot(d_04) +
+  geom_point(aes(rugged, loggdp, color = cont_africa), shape = 21) +
+  theme(legend.position = '') +
+  geom_line(data = d_04 %>% filter(cont_africa == 0),
+            aes(rugged, mu_mean)) +
+  geom_ribbon(data = d_04 %>% filter(cont_africa == 0),
+              aes(x=rugged, ymin=mu_hpdi_l, ymax=mu_hpdi_h), alpha = .1) +
+  geom_line(data = d_04 %>% filter(cont_africa == 1),
+            aes(rugged, mu_mean), color = 'dodgerblue') +
+  geom_ribbon(data = d_04 %>% filter(cont_africa == 1),
+              aes(x=rugged, ymin=mu_hpdi_l, ymax=mu_hpdi_h), alpha = .1, fill = 'dodgerblue') +
+  annotate('text', x = 4, y = 9, label = "Not Africa") +
+  annotate('text', x = 4, y = 7, label = "Africa", color = 'dodgerblue') 
+```
+
+### 7.1.2 Adding a linear interaction does work
+
+Code the model.
+
+```{stan output.var="m07_5"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+  vector<lower=0,upper=1>[N] cont_africa;
+}
+parameters {
+  real a;
+  real bR;
+  real bA;
+  real bAR;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] gamma;
+  vector[N] mu;
+  
+  for (i in 1:N) {
+    gamma[i] = bR + bAR * cont_africa[i];
+    mu[i] = a + gamma[i] * rugged[i] + bA * cont_africa[i];
+  }
+
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+  target += normal_lpdf(bA | 0, 1);
+  target += normal_lpdf(bAR | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu; vector[N] gamma;
+  for(n in 1:N) {
+    gamma[n] = bR + bAR * cont_africa[n];
+    mu[n] = a + gamma[n] * rugged[n] + bA * cont_africa[n];
+    log_lik[n] = normal_lpdf(loggdp[n] | mu[n], sigma);
+  }
+  }
+}
+
+```
+
+```{r}
+dat <- list(
+  N = NROW(d),
+  loggdp = d$loggdp,
+  rugged = d$rugged,
+  cont_africa = d$cont_africa
+)
+
+fit07_5 <- sampling(m07_5, data = dat, iter = 10000, chains = 4, cores = 4)
+```
+
+Compare three models.
+
+```{r}
+log_lik_07_5 <- extract_log_lik(fit07_5, merge_chains = FALSE)
+waic07_5 <- waic(log_lik_07_5)
+
+mod_comp <- compare(waic07_3, waic07_4, waic07_5)
+mod_comp
+```
+
+Overthinking
+
+```{stan output.var="m07_5b"}
+data {
+  int N;
+  vector[N] loggdp;
+  vector[N] rugged;
+  vector<lower=0,upper=1>[N] cont_africa;
+}
+parameters {
+  real a;
+  real bR;
+  real bA;
+  real bAR;
+  real<lower=0, upper=10> sigma;
+}
+model {
+  vector[N] mu;
+  
+  for (i in 1:N) {
+    mu[i] = a + bR * rugged[i] + bAR * rugged[i] * cont_africa[i] + bA * cont_africa[i];
+  }
+
+  target += normal_lpdf(loggdp | mu, sigma);
+  target += normal_lpdf(a | 8, 100);
+  target += normal_lpdf(bR | 0, 1);
+  target += normal_lpdf(bA | 0, 1);
+  target += normal_lpdf(bAR | 0, 1);
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu; vector[N] gamma;
+  for(n in 1:N) {
+    gamma[n] = bR + bAR * cont_africa[n];
+    mu[n] = a + gamma[n] * rugged[n] + bA * cont_africa[n];
+    log_lik[n] = normal_lpdf(loggdp[n] | mu[n], sigma);
+  }
+  }
+}
+
+```
+
+### 7.1.3 Plotting the interaction
+
+```{r}
+post07_5 <- as.data.frame(fit07_5)
+
+f_mu_07_5 <- function(rugged, cont_africa) with(post07_5, 
+             a + bR * rugged + bAR * rugged * cont_africa + bA * cont_africa )
+
+mu_07_5 <- mapply(f_mu_07_5, rugged = d$rugged, cont_africa = d$cont_africa)
+
+mu_07_5_mean <- apply(mu_07_5, 2, mean)
+mu_07_5_pi <- apply(mu_07_5, 2, rethinking::PI, prob = .97)
+
+d_07_5 <- d %>%
+  mutate(mu_mean = mu_07_5_mean,
+         mu_pi_l = mu_07_5_pi[1,],
+         mu_pi_h = mu_07_5_pi[2,],
+         inAfrica = ifelse(cont_africa, 'African nations', 'Non-African nations'))
+```
+
+Figure 7.4
+
+```{r}
+ggplot(d_07_5) +
+  geom_point(aes(rugged, loggdp, color = cont_africa), shape = 21) +
+  theme(legend.position = '') +
+  geom_line(aes(rugged, mu_mean)) +
+  geom_ribbon(aes(x=rugged, ymin=mu_pi_l, ymax=mu_pi_h, fill = cont_africa), alpha = .1) +
+  facet_wrap(~inAfrica) +
+  labs(x = 'Terrain Ruggedness Index', y = 'log GDP year 2000')
+```
+
+#### 7.1.4.1 parameters change meaning
+
+Model summary
+
+```{r}
+print(fit07_5, probs = c(0.1, 0.5, 0.9), pars = c('a', 'bA', 'bR', 'bAR', 'sigma'))
+```
+
+#### 7.1.4.2 Incorporating uncertainty
+
+Calculate posterior for gamma
+
+```{r}
+post <- as.data.frame(fit07_5, pars = c('a', 'bA', 'bR', 'bAR'))
+gamma_africa <- post$bR + post$bAR * 1
+gamma_notafrica <- post$bR + post$bAR * 0
+```
+
+means
+
+```{r}
+c(mean(gamma_africa), mean(gamma_notafrica))
+```
+
+Figure 7.5
+
+```{r}
+ggplot() +
+  geom_density(aes(gamma_africa), color = 'dodgerblue') +
+  geom_density(aes(gamma_notafrica), color = 'black') +
+  labs(x = 'gamma')
+```
+
+Difference between them
+
+```{r}
+diff <- gamma_africa - gamma_notafrica
+sum( diff < 0 ) / length( diff )
+```
+
+## 7.2 Symmetric of the liner interaction
+
+### 7.2.2 Africa depends on ruggedness
+
+```{r}
+d_07_5 <- d_07_5 %>%
+  mutate(rugged_hi = rugged > median(rugged),
+         inAfrica_num = as.integer(inAfrica=='African nations')) %>%
+  mutate(inAfrica_num = ifelse(rugged_hi, inAfrica_num + .02, inAfrica_num))
+
+d_imaginary <- d_07_5 %>% select(rugged) %>% range
+
+# imaginary low values
+mu_rugged_lo <- mapply(f_mu_07_5, rugged = d_imaginary[1], cont_africa = 0:1)
+mu_rugged_lo_mean <- apply(mu_rugged_lo, 2, mean)
+mu_rugged_lo_pi <- apply(mu_rugged_lo, 2, rethinking::PI, prob = .97)
+
+# imaginary high values
+mu_rugged_hi <- mapply(f_mu_07_5, rugged = d_imaginary[2], cont_africa = 0:1)
+mu_rugged_hi_mean <- apply(mu_rugged_hi, 2, mean)
+mu_rugged_hi_pi <- apply(mu_rugged_hi, 2, rethinking::PI, prob = .97)
+
+# organize data
+d_imag <- 
+  data.frame(inAfrica_num = 0:1, 
+             country = rep(c('lo', 'hi'), each = 2), 
+             loggdp_mean = c(mu_rugged_lo_mean, mu_rugged_hi_mean), 
+             loggdp_pi_l = c(mu_rugged_lo_pi[1,], mu_rugged_hi_pi[1,]), 
+             loggdp_pi_h = c(mu_rugged_lo_pi[2,], mu_rugged_hi_pi[2,]))
+
+```
+
+Figure 7.6
+
+```{r}
+ggplot() +
+  # graph raw actual values
+  geom_point(data = d_07_5,
+             aes(inAfrica_num, loggdp, color = rugged_hi), shape = 21) +
+  
+  # graph imaginary hi values
+  geom_ribbon(data = d_imag %>% filter(country == 'hi'),
+              aes(x = inAfrica_num, y = loggdp_mean, ymin = loggdp_pi_l, ymax = loggdp_pi_h),
+              alpha = .1, fill = 'dodgerblue') +
+  geom_line(data = d_imag %>% filter(country == 'hi'),
+              aes(x = inAfrica_num, y = loggdp_mean),
+              color = 'dodgerblue') +
+  
+  # graph imaginary lo values
+  geom_ribbon(data = d_imag %>% filter(country == 'lo'),
+              aes(x = inAfrica_num, y = loggdp_mean, ymin = loggdp_pi_l, ymax = loggdp_pi_h),
+              alpha = .1, fill = 'black') +
+  geom_line(data = d_imag %>% filter(country == 'lo'),
+              aes(x = inAfrica_num, y = loggdp_mean),
+              color = 'black', linetype = 'dashed') +
+  
+  # other stuff
+  scale_color_manual(values = c('black', 'dodgerblue')) +
+  theme(legend.position = '') +
+  labs(x = 'continent', y = 'log GDP year 2000') +
+  scale_x_continuous(breaks = c(0.01, 1.01), labels = c('other', 'Africa'))
+```
+
+## 7.3 Continuous interactions
+
+### 7.3.1 The data
+
+Load the data
+
+```{r}
+data('tulips', package = 'rethinking')
+d  <- tulips; rm(tulips)
+```
+
+### 7.3.2 The uncentered model
+
+Code the two models
+
+```{stan output.var="m07_6"}
+data {
+  int N;
+  vector[N] water;
+  vector[N] shade;
+  vector[N] blooms;
+}
+parameters {
+  real a;
+  real bW;
+  real bS;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu;
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bS | 0, 100);
+  target += normal_lpdf(bW | 0, 100);
+  target += uniform_lpdf(sigma | 0, 100);
+  
+  mu = a + bW * water + bS * shade;
+  target += normal_lpdf(blooms | mu, sigma);
+  
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(i in 1:N) {
+    mu[i] = a + bW * water[i] + bS * shade[i];
+    log_lik[i] = normal_lpdf(blooms[i] | mu[i], sigma);
+  }
+  }
+}
+
+```
+
+
+```{stan output.var="m07_7"}
+data {
+  int N;
+  vector[N] water;
+  vector[N] shade;
+  vector[N] blooms;
+}
+parameters {
+  real a;
+  real bW;
+  real bS;
+  real bWS;
+  real<lower=0> sigma;
+}
+model {
+  vector[N] mu;
+  target += normal_lpdf(a | 0, 100);
+  target += normal_lpdf(bS | 0, 100);
+  target += normal_lpdf(bW | 0, 100);
+  target += normal_lpdf(bWS | 0, 100);
+  target += uniform_lpdf(sigma | 0, 100);
+  
+  mu = a + bW * water + bS * shade + bWS * water .* shade;
+  target += normal_lpdf(blooms | mu, sigma);
+  
+}
+generated quantities {
+  vector[N] log_lik;
+  {
+  vector[N] mu;
+  for(i in 1:N) {
+    mu[i] = a + bW * water[i] + bS * shade[i] + bWS * water[i] * shade[i];
+    log_lik[i] = normal_lpdf(blooms[i] | mu[i], sigma);
+  }
+  }
+}
+
+```
+
+Organize data, fit, and sample from both models.
+
+```{r}
+dat <- list(N = NROW(d), water = d$water, shade = d$shade, blooms = d$blooms)
+fit07_6 <- sampling(m07_6, data = dat, iter = 1000, chains = 2, cores = 2)
+fit07_7 <- sampling(m07_7, data = dat, iter = 1000, chains = 2, cores = 2)
+```
+
+Summary of models
+
+```{r}
+print(fit07_6, include = F, pars = 'log_lik', probs = c(0.1, 0.5, 0.9))
+print(fit07_7, include = F, pars = 'log_lik', probs = c(0.1, 0.5, 0.9))
+```
+
+Compare models
+
+```{r}
+log_lik_07_6 <- extract_log_lik(fit07_6, merge_chains = FALSE)
+waic07_6 <- waic(log_lik_07_6)
+
+log_lik_07_7 <- extract_log_lik(fit07_7, merge_chains = FALSE)
+waic07_7 <- waic(log_lik_07_7)
+
+mod_comp <- compare(waic07_6, waic07_7)
+mod_comp
+```
+
+For centering, we can use the same models, and just center the data given to them.
+
+```{r}
+dat <- list(N = NROW(d), water = d$water - mean(d$water), shade = d$shade - mean(d$shade), blooms = d$blooms)
+fit07_8 <- sampling(m07_6, data = dat, iter = 10000, chains = 2, cores = 2)
+fit07_9 <- sampling(m07_7, data = dat, iter = 10000, chains = 2, cores = 2)
+```
+
+Now summarise the centered versions.
+
+```{r}
+print(fit07_8, include = F, pars = 'log_lik', probs = c(0.1, 0.5, 0.9))
+print(fit07_9, include = F, pars = 'log_lik', probs = c(0.1, 0.5, 0.9))
+```
+
+### 7.3.4 Plotting implied predictions
+
+```{r}
+# setup new data
+nd <- expand.grid(water = seq(-1, 1), shade = seq(-1, 1))
+
+# get draws
+post07_8 <- as.data.frame(fit07_8, pars = c('a', 'bW', 'bS'))
+post07_9 <- as.data.frame(fit07_9, pars = c('a', 'bW', 'bS', 'bWS'))
+
+# setup posterior calcs
+f_mu_07_8 <- function(water, shade) with(post07_8, 
+             a + bW * water + bS * shade  )
+mu_07_8 <- mapply(f_mu_07_8, water = nd$water, shade = nd$shade)
+
+f_mu_07_9 <- function(water, shade) with(post07_9, 
+             a + bW * water + bS * shade + bWS * water * shade )
+mu_07_9 <- mapply(f_mu_07_9, water = nd$water, shade = nd$shade)
+
+# summarise posterior
+mu_07_8_mean <- apply(mu_07_8, 2, mean)
+mu_07_8_pi <- apply(mu_07_8, 2, rethinking::PI, prob = .97)
+
+mu_07_9_mean <- apply(mu_07_9, 2, mean)
+mu_07_9_pi <- apply(mu_07_9, 2, rethinking::PI, prob = .97)
+
+# organize data
+nd <- cbind(bWS = 0, nd) %>% rbind(cbind(bWS = 1, nd))
+
+nd <- nd %>%
+  mutate(bWS = ifelse(bWS, 'With Interaction', 'Without interaction'),
+         water = paste0('water.c = ', water),
+         blooms = c(mu_07_8_mean, mu_07_9_mean),
+         blooms_pi_l = c(mu_07_8_pi[1,], mu_07_9_pi[1,]),
+         blooms_pi_h = c(mu_07_8_pi[2,], mu_07_9_pi[2,]))
+```
+
+Figure 7.7 bottom row
+
+```{r}
+ggplot(nd) +
+  geom_ribbon(aes(x=shade, ymin=blooms_pi_l, ymax=blooms_pi_h), alpha = .1) +
+  geom_line(aes(shade, blooms)) +
+  scale_x_continuous(breaks = c(-1, 0, 1)) +
+  theme(panel.border = element_rect(fill = NA),
+        panel.spacing = unit(0, 'mm')) +
+  facet_grid(bWS~water)
+```
+
+Not sure what was mean by data in the points as we created new data to predict blooms here.
+
+
+
+
+
 
